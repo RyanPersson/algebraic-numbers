@@ -90,6 +90,18 @@ button { font: inherit; color: inherit; }
   letter-spacing: 0.01em;
 }
 .brand-actions { display: flex; gap: 2px; margin-right: -6px; }
+.brand-mini {
+  top: 16px;
+  left: 16px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  cursor: pointer;
+}
+.brand-mini:hover { border-color: var(--border-strong); }
 
 .legend {
   display: flex;
@@ -338,8 +350,21 @@ body.clean .panel, body.clean .status, body.clean .zoom-ctl, body.clean .tooltip
 
 /* ---------- small screens ---------- */
 @media (max-width: 760px) {
-  .brand { top: 10px; left: 10px; right: 10px; width: auto; padding: 10px 12px 12px; }
-  .legend { margin: 6px 0 10px; }
+  /* a compact panel, so the picture gets the screen */
+  .brand { top: 8px; left: 8px; right: 8px; width: auto; padding: 6px 8px 8px 10px; border-radius: 10px; }
+  .brand h1 { font-size: 13.5px; }
+  .brand .icon-btn { width: 28px; height: 28px; }
+  .brand .icon-btn svg { width: 16px; height: 16px; }
+  .brand-actions { margin-right: -2px; }
+  .legend { margin: 2px 0 6px; gap: 2px 9px; font-size: 11px; }
+  .legend .title { width: auto; font-size: 9.5px; margin-right: 2px; }
+  .legend .swatch { width: 7px; height: 7px; }
+  .search input { height: 30px; font-size: 12.5px; padding: 0 8px; }
+  .search-msg { margin-top: 6px; font-size: 11.5px; }
+  .brand-mini { top: 8px; left: 8px; width: 34px; height: 34px; border-radius: 10px; }
+  .zoom-ctl { gap: 3px; }
+  .zoom-ctl .icon-btn { width: 30px; height: 30px; }
+  .status { font-size: 10.5px; }
   .settings { top: auto; left: 10px; right: 10px; bottom: 10px; width: auto; max-height: 60dvh; }
   .info {
     top: auto;

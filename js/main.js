@@ -979,6 +979,17 @@ function toggleSettings(open) {
   document.body.classList.toggle('settings-open', open);
 }
 $('btn-settings').onclick = () => toggleSettings();
+
+// The panel folds away into a small button (remembered in this browser).
+const COLLAPSED_KEY = 'algebraic-numbers.panel-collapsed';
+function setPanelCollapsed(collapsed) {
+  if (collapsed) toggleSettings(false);
+  $('brand').hidden = collapsed;
+  $('brand-mini').hidden = !collapsed;
+  try { localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
+}
+$('btn-minimize').onclick = () => setPanelCollapsed(true);
+$('brand-mini').onclick = () => setPanelCollapsed(false);
 $('btn-help').onclick = () => { $('help').hidden = false; renderTexIn($('help')); };
 $('help-close').onclick = () => { $('help').hidden = true; };
 $('help').addEventListener('click', (e) => { if (e.target === $('help')) $('help').hidden = true; });
@@ -1086,4 +1097,5 @@ updateLegend();
 window.addEventListener('resize', resize);
 resize();
 if (initialSel) select(initialSel);
+try { if (localStorage.getItem(COLLAPSED_KEY) === '1') setPanelCollapsed(true); } catch { /* private mode */ }
 window.addEventListener('load', () => { if (selected) renderInfo(); });

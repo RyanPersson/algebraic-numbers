@@ -1395,6 +1395,17 @@ $('fl-save').onclick = () => {
   $('fl-name').value = '';
   renderSaved();
 };
+
+// The panel folds away into a small button (remembered in this browser).
+const COLLAPSED_KEY = 'algebraic-numbers.panel-collapsed';
+function setPanelCollapsed(collapsed) {
+  if (collapsed) { toggleSettings(false); toggleFlights(false); }
+  $('brand').hidden = collapsed;
+  $('brand-mini').hidden = !collapsed;
+  try { localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
+}
+$('btn-minimize').onclick = () => setPanelCollapsed(true);
+$('brand-mini').onclick = () => setPanelCollapsed(false);
 $('btn-help').onclick = () => { $('help').hidden = false; renderTexIn($('help')); };
 $('help-close').onclick = () => { $('help').hidden = true; };
 $('help').addEventListener('click', (e) => { if (e.target === $('help')) $('help').hidden = true; });
@@ -1535,6 +1546,7 @@ window.addEventListener('resize', resize);
 resize();
 if (initial && initial.sel) select(initial.sel);
 if (initial && initial.flight) showFlightCard(initial.flight);
+try { if (localStorage.getItem(COLLAPSED_KEY) === '1') setPanelCollapsed(true); } catch { /* private mode */ }
 window.addEventListener('load', () => { if (selected) renderInfo(); });
 
 // For scripts and recordings (e.g. pixeldif record --ready "viewer.loaded"

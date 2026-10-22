@@ -25,6 +25,41 @@ GitHub Pages as is.
 - Press `V` to hide all the controls and see just the picture (for screenshots or
   screen recordings). Press it again to bring them back.
 
+### Zoom flights
+
+The flight button (next to settings) builds a smooth zoom through a list of views:
+start from the overview, zoom in to something you like, press **Add this view**,
+and repeat for more waypoints. **Copy link** gives a URL that opens as a little
+player: press Play and it flies from the overview to your view like a fractal-zoom
+video, then hands over to you for exploring. **Save** keeps flights in this browser,
+and **Fly here** in a number's info panel makes a flight straight to it.
+
+- The path between views is van Wijk and Nuij's "smooth and efficient zooming and
+  panning": constant perceived speed, zooming out a little if that makes a pan
+  shorter. Time is eased in and out.
+- Every frame is computed live. Tiles are computed ahead along the path. When the
+  computer can't keep up, playback slows down smoothly (and holds if it must) rather
+  than showing holes. *Standard* quality computes 1× tiles even on high-density
+  screens (4× less work than *Sharp*). High degrees are slow.
+- Space pauses. A click, scroll or key takes over.
+
+Zooming crossfades continuously between the two nearest tile levels, and new tiles
+fade in. Each level's dots, glow and fine dust are drawn for its own scale, so
+switching levels abruptly would make the brightness jump.
+
+### Recording flights
+
+`window.viewer` is a small scripting hook for recorders.
+
+- `viewer.loaded` is true once the current view is fully drawn.
+- `viewer.play({capture: true})` plays the flight in the link frame-locked. The
+  recorder must replace `performance.now` with a clock it advances one frame at a
+  time.
+- The page sets `window.__pixeldif.gl = true` and marks each frame as drawn
+  (`window.__pixeldif.drawn`) only once every tile it needs is on screen. Until then
+  the recorder should wait, so every captured frame is complete.
+- `viewer.probe()` returns the current `{zoom, x, y, t}` for labelling frames.
+
 ## What is drawn
 
 Every algebraic number α is drawn once, from its minimal polynomial

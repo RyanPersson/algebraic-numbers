@@ -18,6 +18,9 @@
     <div class="brand-row">
       <h1>Algebraic numbers</h1>
       <div class="brand-actions">
+        <button class="icon-btn" id="btn-flights" title="Zoom flights" aria-label="Zoom flights" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4.5 19.5c2.5-.5 4.5-2.5 6.5-5.5s4.5-7 8.5-9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="4.5" cy="19.5" r="1.8" fill="currentColor"/><path d="M14.5 4.2h5.2v5.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings" aria-expanded="false">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
         </button>
@@ -87,6 +90,55 @@
     <p class="hint">Degrees 6–7 and extra detail make deep zooms noticeably slower. Press <kbd>V</kbd> to hide all controls.</p>
   </section>
 
+  <section class="panel settings flights" id="flights" hidden>
+    <div class="ptitle">Zoom flight</div>
+    <p class="hint">Fly smoothly through views, then share the flight as a link that plays like a video.</p>
+    <ol class="kf-list" id="kf-list"></ol>
+    <div class="row buttons">
+      <button class="text-btn" id="kf-add">+ Add this view</button>
+    </div>
+    <label class="row check">
+      <input type="checkbox" id="kf-overview" checked>
+      <span>Start from the overview</span>
+    </label>
+    <label class="row slider">
+      <span class="label">Duration <output id="fl-dur-out"></output></span>
+      <input type="range" id="fl-dur" min="0" max="120" step="1">
+    </label>
+    <div class="row">
+      <span class="label">Quality</span>
+      <div class="seg" id="fl-quality">
+        <button data-value="standard">Standard</button>
+        <button data-value="sharp">Sharp (slower)</button>
+      </div>
+    </div>
+    <div class="row buttons">
+      <button class="text-btn primary" id="fl-play">▶ Play</button>
+      <button class="text-btn" id="fl-link">Copy link</button>
+    </div>
+    <div class="ptitle">Saved flights</div>
+    <div id="fl-saved"></div>
+    <div class="row save">
+      <input type="text" id="fl-name" placeholder="Name this flight" maxlength="60">
+      <button class="text-btn" id="fl-save">Save</button>
+    </div>
+  </section>
+
+  <div class="panel flight-ui flight-card" id="flight-card" hidden>
+    <div class="fc-kicker">Zoom flight</div>
+    <div class="fc-desc" id="flight-desc"></div>
+    <div class="fc-actions">
+      <button class="text-btn primary" id="flight-play">▶ Play</button>
+      <button class="text-btn" id="flight-skip">Explore instead</button>
+    </div>
+    <p class="fc-note">It is computed live in your browser, so a fast computer helps. Space pauses; a click or scroll takes over.</p>
+  </div>
+  <div class="flight-status" id="flight-status" hidden></div>
+  <div class="panel flight-ui flight-end" id="flight-end" hidden>
+    <button class="text-btn" id="flight-replay">↻ Replay</button>
+    <button class="text-btn primary" id="flight-explore">Explore</button>
+  </div>
+
   <aside class="panel info" id="info" hidden aria-live="polite">
     <button class="icon-btn close" id="info-close" title="Close" aria-label="Close">
       <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -129,6 +181,7 @@
         <li>Drag to pan, scroll or pinch to zoom, double-click to zoom in.</li>
         <li>Keys: <kbd>+</kbd> <kbd>−</kbd> zoom, arrows pan, <kbd>/</kbd> search, <kbd>Esc</kbd> close.</li>
         <li><kbd>V</kbd> hides all the controls, leaving just the picture. Press it again to bring them back.</li>
+        <li>The flight button (next to settings) records a smooth zoom through views and makes a link that plays it like a video.</li>
         <li>The address bar keeps the current view, so you can share a link.</li>
       </ul>
       <p class="credit">Inspired by Stephen J. Brooks’ pictures of the algebraic numbers (<a href="https://commons.wikimedia.org/wiki/File:Leadingcoeff.png" target="_blank" rel="noopener">by leading coefficient</a>, <a href="https://commons.wikimedia.org/wiki/File:Algebraicszoom.png" target="_blank" rel="noopener">by degree</a>). Source on <a href="https://github.com/RyanPersson/algebraic-numbers" target="_blank" rel="noopener">GitHub</a>. Zoom is limited only by double-precision arithmetic (about 4·10⁹×).</p>

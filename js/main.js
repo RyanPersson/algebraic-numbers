@@ -4,6 +4,7 @@ import {
   polyRoots, radiusCss, radiusWorld, makeConfig, COMPLEX, REAL, CIRCLE,
 } from './core.js';
 import * as Alg from './algebra.js';
+import { makePath, ease, autoDuration, encodeViews, decodeViews } from './flight.js';
 
 const MIN_ZOOM = -3;
 const MAX_ZOOM = 32; // beyond this, double precision runs out
@@ -30,8 +31,6 @@ const canvas = $('map');
 const g = canvas.getContext('2d', { alpha: false });
 
 const sCss = (zoom = view.zoom) => S0_CSS * Math.pow(2, zoom);
-const level = () => Math.max(KMIN, Math.min(KMAX, Math.round(2 * view.zoom)));
-const levelZoom = (k) => k / 2;
 const toWorld = (px, py) => {
   const s = sCss();
   return { x: view.cx + (px - W / 2) / s, y: view.cy - (py - H / 2) / s };
@@ -44,15 +43,24 @@ const toScreen = (x, y) => {
 // ---------------------------------------------------------------------------
 // Workers and tile cache
 // ---------------------------------------------------------------------------
+// Tiles are 256×256 images at half-octave zoom levels k (zoom k/2), rendered at
+// tileDpr device pixels per CSS pixel (2 on high-density screens; flights may use 1).
 
 const NW = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
 const pool = [];
 let gen = 0;
-let cache = new Map(); // "z/i/j" -> {bmp, last}
+let tileDpr = 1;
+let cache = new Map(); // key -> {bmp, last, born}
 let stale = new Map(); // previous settings' tiles, shown until replaced
 const inflight = new Map(); // key -> generation it was requested for
 let queue = [];
+let protect = new Set(); // tiles a flight is about to need: never evicted
 let frame = 0;
+// Zooming between levels crossfades the two nearest ones, so brightness, dot sizes
+// and fine dust change continuously instead of jumping at each level. (false: draw
+// only the nearest level, as before; kept for benchmarks.)
+let crossfade = true;
+let fadeMs = 180; // newly computed tiles fade in over this long
 
 for (let k = 0; k < NW; k++) {
   const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -62,35 +70,74 @@ for (let k = 0; k < NW; k++) {
 }
 const qWorker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
-const tkey = (k, i, j) => `${k}/${i}/${j}`;
-const tileWorld = (k) => TILE / (S0_CSS * Math.pow(2, levelZoom(k)) * DPR);
+const tkey = (k, i, j, dpr = tileDpr) => `${dpr}|${k}|${i}|${j}`;
+const tileWorld = (k, dpr = tileDpr) => TILE / (S0_CSS * Math.pow(2, k / 2) * dpr);
+const naturalTileDpr = () => (DPR >= 1.5 ? 2 : 1);
 
-function visibleRange(z, pad) {
-  const s = sCss(), h = tileWorld(z);
+// The levels drawn at a zoom: [k, weight of level k+1]
+function levelsFor(zoom) {
+  const z2 = Math.max(KMIN, Math.min(KMAX, 2 * zoom));
+  if (!crossfade) return [Math.round(z2), 0];
+  const k = Math.floor(z2);
+  return [k, k >= KMAX ? 0 : z2 - k];
+}
+// the level that dominates the picture (hit tests and ring sizes follow it)
+const level = () => { const [k, t] = levelsFor(view.zoom); return t > 0.5 ? k + 1 : k; };
+const levelZoom = (k) => k / 2;
+
+function visibleRange(k, pad, v = view) {
+  const s = sCss(v.zoom), h = tileWorld(k);
   const hw = W / 2 / s, hh = H / 2 / s;
   return {
-    i0: Math.floor((view.cx - hw) / h) - pad,
-    i1: Math.floor((view.cx + hw) / h) + pad,
-    j0: Math.floor((view.cy - hh) / h) - pad,
-    j1: Math.floor((view.cy + hh) / h) + pad,
+    i0: Math.floor((v.cx - hw) / h) - pad,
+    i1: Math.floor((v.cx + hw) / h) + pad,
+    j0: Math.floor((v.cy - hh) / h) - pad,
+    j1: Math.floor((v.cy + hh) / h) + pad,
   };
 }
 
+// Every tile a view draws, the dominant level first: [{k, i, j, rank}]
+function tilesOf(v, pad = 0) {
+  const [k, t] = levelsFor(v.zoom);
+  const layers = t === 0 ? [k] : t > 0.5 ? [k + 1, k] : [k, k + 1];
+  const out = [];
+  layers.forEach((kk, rank) => {
+    const r = visibleRange(kk, pad, v);
+    for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) out.push({ k: kk, i, j, rank });
+  });
+  return out;
+}
+
+// Are all the tiles this view draws in the cache?
+function viewComplete(v) {
+  for (const q of tilesOf(v)) if (!cache.has(tkey(q.k, q.i, q.j))) return false;
+  return true;
+}
+
 function schedule() {
-  const z = level();
-  const h = tileWorld(z);
   const jobs = [], seen = new Set();
-  for (const pad of [0, 1]) {
-    const r = visibleRange(z, pad);
-    for (let j = r.j0; j <= r.j1; j++) {
-      for (let i = r.i0; i <= r.i1; i++) {
-        const k = tkey(z, i, j);
-        if (seen.has(k) || cache.has(k) || inflight.get(k) === gen) continue;
-        seen.add(k);
-        const dx = (i + 0.5) * h - view.cx, dy = (j + 0.5) * h - view.cy;
-        jobs.push({ k, z, i, j, pri: pad * 1e9 + dx * dx + dy * dy });
-      }
+  const add = (k, i, j, pri) => {
+    const key = tkey(k, i, j);
+    if (seen.has(key) || cache.has(key) || inflight.get(key) === gen) return;
+    seen.add(key);
+    jobs.push({ key, k, i, j, pri });
+  };
+  if (flight && flight.active) planFlight(add);
+  else {
+    protect = new Set();
+    const dist = (q) => {
+      const h = tileWorld(q.k), dx = (q.i + 0.5) * h - view.cx, dy = (q.j + 0.5) * h - view.cy;
+      return (dx * dx + dy * dy) * sCss() ** 2;
+    };
+    for (const q of tilesOf(view)) add(q.k, q.i, q.j, q.rank * 1e12 + dist(q));
+    // the level just past the ones on screen, ready for zooming on
+    const [k, t] = levelsFor(view.zoom);
+    if (t === 0 && crossfade && k < KMAX) {
+      const r = visibleRange(k + 1, 0);
+      for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) add(k + 1, i, j, 2e12 + dist({ k: k + 1, i, j }));
     }
+    const r = visibleRange(level(), 1);
+    for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) add(level(), i, j, 3e12 + dist({ k: level(), i, j }));
   }
   jobs.sort((a, b) => a.pri - b.pri);
   queue = jobs;
@@ -102,9 +149,9 @@ function dispatch() {
     if (w.job) continue;
     const job = queue.shift();
     if (!job) break;
-    w.job = { ...job, gen };
-    inflight.set(job.k, gen);
-    w.postMessage({ type: 'tile', key: job.k, z: levelZoom(job.z), i: job.i, j: job.j, dpr: DPR, settings: { ...settings } });
+    w.job = { ...job, gen, dpr: tileDpr };
+    inflight.set(job.key, gen);
+    w.postMessage({ type: 'tile', key: job.key, z: levelZoom(job.k), i: job.i, j: job.j, dpr: tileDpr, settings: { ...settings } });
   }
   updateBusy();
 }
@@ -112,7 +159,7 @@ function dispatch() {
 async function onTile(w, msg) {
   const job = w.job;
   w.job = null;
-  if (inflight.get(job.k) === job.gen) inflight.delete(job.k);
+  if (inflight.get(job.key) === job.gen) inflight.delete(job.key);
   if (job.gen !== gen) {
     schedule(); // the settings changed meanwhile: this tile still needs doing
     return;
@@ -120,16 +167,24 @@ async function onTile(w, msg) {
   dispatch();
   const bmp = await createImageBitmap(new ImageData(new Uint8ClampedArray(msg.pixels.buffer), TILE, TILE));
   if (job.gen === gen) {
-    cache.set(job.k, { bmp, last: frame });
+    cache.set(job.key, { bmp, last: frame, born: performance.now() });
     requestRender();
   } else bmp.close();
   updateBusy();
 }
 
+function cacheMax() {
+  const perLevel = (Math.ceil((W * tileDpr) / TILE) + 2) * (Math.ceil((H * tileDpr) / TILE) + 2);
+  return Math.max(300, Math.min(1000, perLevel * 8, protect.size + perLevel * 4));
+}
+
 function evict() {
-  if (cache.size <= CACHE_MAX) return;
-  const entries = [...cache.entries()].filter(([, t]) => t.last < frame).sort((a, b) => a[1].last - b[1].last);
-  for (const [k, t] of entries.slice(0, cache.size - Math.floor(CACHE_MAX * 0.85))) {
+  const max = cacheMax();
+  if (cache.size <= max) return;
+  const entries = [...cache.entries()]
+    .filter(([k, t]) => t.last < frame && !protect.has(k))
+    .sort((a, b) => a[1].last - b[1].last);
+  for (const [k, t] of entries.slice(0, cache.size - Math.floor(max * 0.85))) {
     t.bmp.close();
     cache.delete(k);
   }
@@ -151,6 +206,14 @@ function invalidate(keepStale = true) {
   requestRender();
 }
 
+function setTileDpr(d) {
+  if (d === tileDpr) return;
+  tileDpr = d; // tiles of the other resolution stay cached and serve as fallbacks
+  queue = [];
+  schedule();
+  requestRender();
+}
+
 function updateBusy() {
   $('status-busy').hidden = !pool.some((w) => w.job) && queue.length === 0;
 }
@@ -166,8 +229,8 @@ function requestRender() {
   requestAnimationFrame(render);
 }
 
-function tileRect(z, i, j) {
-  const h = tileWorld(z), s = sCss();
+function tileRect(k, i, j, dpr = tileDpr) {
+  const h = tileWorld(k, dpr), s = sCss();
   const x0 = ((i * h - view.cx) * s + W / 2) * DPR;
   const x1 = (((i + 1) * h - view.cx) * s + W / 2) * DPR;
   const y0 = ((view.cy - (j + 1) * h) * s + H / 2) * DPR;
@@ -176,18 +239,22 @@ function tileRect(z, i, j) {
   return [X0, Y0, Math.round(x1) - X0, Math.round(y1) - Y0];
 }
 
-function lookup(k) {
-  const t = cache.get(k);
-  if (t) { t.last = frame; return t.bmp; }
-  return stale.get(k) || null;
+// Any cached image covering exactly the area of tile (k, i, j): this resolution,
+// the other one (a 2× tile at level k−2 covers the same area), or a stale one.
+function lookupArea(k, i, j) {
+  for (const [kk, d] of [[k, tileDpr], [tileDpr === 1 ? k - 2 : k + 2, 3 - tileDpr]]) {
+    const key = tkey(kk, i, j, d);
+    const t = cache.get(key);
+    if (t) { t.last = frame; return [t.bmp, kk, d]; }
+    const b = stale.get(key);
+    if (b) return [b, kk, d];
+  }
+  return null;
 }
 
-// A missing tile is patched with whatever cached tiles of nearby levels cover it,
+// Patch a missing tile with whatever cached tiles of nearby levels cover it,
 // coarse first so finer ones end up on top.
-function drawTile(k, i, j) {
-  const rect = tileRect(k, i, j);
-  const exact = lookup(tkey(k, i, j));
-  if (exact) { g.drawImage(exact, ...rect); return; }
+function drawFallback(k, i, j, rect) {
   const h = tileWorld(k);
   const x0 = i * h, x1 = (i + 1) * h, y0 = j * h, y1 = (j + 1) * h;
   g.save();
@@ -201,31 +268,66 @@ function drawTile(k, i, j) {
     const ja = Math.floor(y0 / hh), jb = Math.ceil(y1 / hh) - 1;
     if ((ib - ia + 1) * (jb - ja + 1) > 16) continue;
     for (let jj = ja; jj <= jb; jj++) for (let ii = ia; ii <= ib; ii++) {
-      const bmp = lookup(tkey(kk, ii, jj));
-      if (bmp) g.drawImage(bmp, ...tileRect(kk, ii, jj));
+      const hit = lookupArea(kk, ii, jj);
+      if (hit) g.drawImage(hit[0], ...tileRect(hit[1], ii, jj, hit[2]));
     }
   }
   g.restore();
 }
 
+let fading = false;
+// One level's tiles at opacity alpha. The base layer patches holes from other
+// levels; the layer blended on top only draws what it has.
+function drawLayer(k, alpha, base) {
+  const r = visibleRange(k, 0);
+  const now = performance.now();
+  for (let j = r.j0; j <= r.j1; j++) {
+    for (let i = r.i0; i <= r.i1; i++) {
+      const key = tkey(k, i, j);
+      const t = cache.get(key);
+      const rect = tileRect(k, i, j);
+      let a = 0;
+      if (t) {
+        t.last = frame;
+        a = fadeMs > 0 ? Math.min(1, (now - t.born) / fadeMs) : 1;
+        if (a < 1) fading = true;
+      }
+      if (base && a < 1) {
+        g.globalAlpha = 1;
+        const st = stale.get(key);
+        if (st) g.drawImage(st, ...rect);
+        else drawFallback(k, i, j, rect);
+      }
+      if (t) {
+        g.globalAlpha = alpha * a;
+        g.drawImage(t.bmp, ...rect);
+      }
+    }
+  }
+  g.globalAlpha = 1;
+}
+
 function render() {
   renderQueued = false;
   frame++;
+  if (flight && flight.active) flightTick(performance.now());
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = '#000';
   g.fillRect(0, 0, canvas.width, canvas.height);
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = 'high';
-  const z = level();
-  const r = visibleRange(z, 0);
-  for (let j = r.j0; j <= r.j1; j++) for (let i = r.i0; i <= r.i1; i++) drawTile(z, i, j);
+  const [k, t] = levelsFor(view.zoom);
+  fading = false;
+  drawLayer(k, 1, true);
+  if (t > 0) drawLayer(k + 1, t, false);
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (ui.grid) drawGrid();
   drawMarkers();
   evict();
   updateStatus();
   positionTooltip();
-  if (flash && performance.now() - flash.t0 < 1600) requestRender();
+  if (flight && flight.capture) signalCapture(viewComplete(view));
+  if (fading || (flash && performance.now() - flash.t0 < 1600) || (flight && flight.active)) requestRender();
 }
 
 function niceStep(minWorld) {
@@ -390,17 +492,203 @@ function resetView() {
 }
 
 function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth;
   H = window.innerHeight;
-  canvas.width = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  if (dpr !== DPR) {
-    DPR = dpr;
-    invalidate(false);
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  if (flight && flight.active) {
+    flight.path = makePath(resolveViews(flight.spec.views), W, S0_CSS);
+    setTileDpr(flight.dpr);
+    requestRender();
+  } else {
+    setTileDpr(naturalTileDpr());
+    viewChanged();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Flights: a smooth zoom through a list of views, played like a video
+// ---------------------------------------------------------------------------
+// Tiles are computed ahead along the path. Playback slows down smoothly (and
+// holds if it must) when they can't keep up, rather than showing holes.
+
+let flight = null;        // the flight playing (or just finished)
+let pendingFlight = null; // a flight from the link, waiting for Play
+const FLIGHT_LOOKAHEAD = 6; // seconds of flight computed ahead
+const FLIGHT_BUFFER = 2;    // seconds that must be ready to play at full speed
+
+function resolveViews(views) {
+  const o = resetView();
+  return views.map((v) => (v.overview ? { x: o.cx, y: o.cy, zoom: o.zoom } : v));
+}
+
+const flightView = (f, t) => f.path.viewAt(f.path.S * ease(f.T > 0 ? t / f.T : 1));
+
+// spec: {views: [{x, y, zoom} | {overview: true}], duration (s, 0 = automatic), quality}
+function startFlight(spec, opts = {}) {
+  stopAnim();
+  pendingFlight = null;
+  $('flight-card').hidden = true;
+  $('flight-end').hidden = true;
+  const path = makePath(resolveViews(spec.views), W, S0_CSS);
+  const capture = !!opts.capture;
+  flight = {
+    active: true, spec, path, T: spec.duration || autoDuration(path.S), t: 0,
+    last: performance.now(), start: performance.now(), lastPlan: 0, stall: 0,
+    phase: capture ? 'play' : 'buffer', rate: 1, capture, paused: false,
+    // standard quality computes 1× tiles even on high-density screens: 4× less work
+    dpr: spec.quality === 'sharp' ? naturalTileDpr() : 1,
+  };
+  fadeMs = capture ? 0 : 180;
+  document.body.classList.add('clean', 'flying');
+  setHover(null);
+  Object.assign(view, flightView(flight, 0));
+  setTileDpr(flight.dpr);
+  if (capture && window.__pixeldif) window.__pixeldif.gl = true; // see signalCapture
+  schedule();
+  requestRender();
+}
+
+function planFlight(add) {
+  const f = flight;
+  const keep = new Set();
+  const t0 = f.phase === 'buffer' ? 0 : f.t;
+  const span = Math.max(0, Math.min(FLIGHT_LOOKAHEAD, f.T - t0));
+  const steps = Math.max(1, Math.ceil(span * 12));
+  for (let n = 0; n <= steps && keep.size < 500; n++) {
+    const tau = t0 + (span * n) / steps;
+    for (const q of tilesOf(flightView(f, tau))) {
+      keep.add(tkey(q.k, q.i, q.j));
+      add(q.k, q.i, q.j, (tau - t0) * 1e3 + q.rank);
+    }
+  }
+  protect = keep;
+}
+
+// How many seconds of flight from t on can be drawn completely (up to span).
+function readyHorizon(f, t, span) {
+  const steps = 24;
+  for (let n = 0; n <= steps; n++) {
+    const tau = Math.min(f.T, t + (span * n) / steps);
+    if (!viewComplete(flightView(f, tau))) return tau - t;
+    if (tau >= f.T) return span;
+  }
+  return span;
+}
+
+function readyFraction(f, t0, t1) {
+  const seen = new Set();
+  let have = 0;
+  for (let tau = t0; tau <= t1 + 1e-9; tau += 1 / 15) {
+    for (const q of tilesOf(flightView(f, tau))) {
+      const key = tkey(q.k, q.i, q.j);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (cache.has(key)) have++;
+    }
+  }
+  return seen.size ? have / seen.size : 1;
+}
+
+function flightTick(now) {
+  const f = flight;
+  const dt = Math.min(0.1, Math.max(0, (now - f.last) / 1000));
+  f.last = now;
+  if (f.capture) {
+    // frame-locked recording: the recorder's clock only moves on complete frames
+    f.t = Math.min(f.T, (now - f.start) / 1000);
+  } else if (f.phase === 'buffer') {
+    const goal = Math.min(f.T, FLIGHT_BUFFER);
+    const frac = readyFraction(f, 0, goal);
+    if (frac >= 1) {
+      f.phase = 'play';
+      flightStatus('');
+    } else flightStatus(`Preparing the flight… ${Math.floor(frac * 100)}%`);
+  } else if (!f.paused) {
+    const h = readyHorizon(f, f.t, FLIGHT_BUFFER);
+    const target = h >= FLIGHT_BUFFER ? 1 : (h / FLIGHT_BUFFER) ** 2;
+    f.rate += (target - f.rate) * (1 - Math.exp(-dt / 0.35));
+    if (h <= 0) f.rate = 0; // this frame isn't computed yet: hold rather than show holes
+    f.t = Math.min(f.T, f.t + dt * f.rate);
+    f.stall = f.rate < 0.03 ? f.stall + dt : 0;
+    flightStatus(f.stall > 0.6 ? 'Computing…' : '');
+  }
+  Object.assign(view, flightView(f, f.t));
+  // re-plan every few frames (counted in frames: a recorder's clock stands still
+  // while a frame waits), and at once if the workers have run dry
+  if (frame - f.lastPlan >= 8 || (queue.length === 0 && !pool.some((w) => w.job))) {
+    f.lastPlan = frame;
+    schedule();
+  }
+  if (f.t >= f.T && f.phase === 'play') finishFlight();
+}
+
+function finishFlight() {
+  const f = flight;
+  f.active = false;
+  Object.assign(view, flightView(f, f.T));
+  if (f.capture && window.__pixeldif) window.__pixeldif.gl = false;
+  fadeMs = 180;
+  protect = new Set();
+  flightStatus('');
+  document.body.classList.remove('flying');
+  if (!f.capture) $('flight-end').hidden = false;
+  requestRender();
+}
+
+// The viewer takes over: back to exploring, with the controls.
+function stopFlight() {
+  if (!flight && !pendingFlight) return;
+  if (flight && flight.capture && window.__pixeldif) window.__pixeldif.gl = false;
+  flight = null;
+  pendingFlight = null;
+  fadeMs = 180;
+  protect = new Set();
+  flightStatus('');
+  $('flight-card').hidden = true;
+  $('flight-end').hidden = true;
+  document.body.classList.remove('flying', 'clean');
+  setTileDpr(naturalTileDpr());
   viewChanged();
 }
+
+function togglePause() {
+  if (!flight || !flight.active || flight.capture) return;
+  flight.paused = !flight.paused;
+  flightStatus(flight.paused ? 'Paused · space to resume' : '');
+}
+
+function flightStatus(text) {
+  const el = $('flight-status');
+  if (el.textContent !== text) el.textContent = text;
+  el.hidden = !text;
+}
+
+// Tells pixeldif's recorder when a frame is complete. Like a WebGL engine it then
+// captures it and advances its virtual clock; until then it waits.
+function signalCapture(complete) {
+  const st = window.__pixeldif;
+  if (!st) return;
+  if (!flight || !flight.active || complete) st.drawn = true;
+  else st.waits = 0;
+}
+
+function showFlightCard(spec) {
+  pendingFlight = spec;
+  const end = spec.views[spec.views.length - 1];
+  const T = spec.duration || autoDuration(makePath(resolveViews(spec.views), W, S0_CSS).S);
+  const mag = end.overview ? '' : ` at ${fmtMag(Math.pow(2, end.zoom))}`;
+  $('flight-desc').textContent = end.overview
+    ? `${spec.views.length} views, ${Math.round(T)} s`
+    : `To ${Alg.formatComplex(end.x, end.y, 8)}${mag} · ${Math.round(T)} s`;
+  $('flight-card').hidden = false;
+  document.body.classList.add('clean');
+}
+$('flight-play').onclick = () => { if (pendingFlight) startFlight(pendingFlight); };
+$('flight-skip').onclick = () => stopFlight();
+$('flight-replay').onclick = () => { if (flight) startFlight(flight.spec); };
+$('flight-explore').onclick = () => stopFlight();
 
 // ---------------------------------------------------------------------------
 // Pointer, wheel and keyboard
@@ -411,6 +699,7 @@ let drag = null, pinch = null;
 
 canvas.addEventListener('pointerdown', (e) => {
   stopAnim();
+  if (flight || pendingFlight) stopFlight();
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 1) {
@@ -474,6 +763,7 @@ canvas.addEventListener('pointerleave', () => { pointerPos = null; if (!drag) se
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   stopAnim();
+  if (flight || pendingFlight) stopFlight();
   const unit = e.deltaMode === 1 ? 0.06 : e.deltaMode === 2 ? 1 : e.ctrlKey ? 0.012 : 0.0022;
   zoomAt(e.clientX, e.clientY, view.zoom - e.deltaY * unit);
   setHover(null);
@@ -492,6 +782,11 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (flight && flight.active && e.key === ' ') { e.preventDefault(); togglePause(); return; }
+  if ((flight || pendingFlight) && e.key !== 'v' && e.key !== 'V') {
+    stopFlight();
+    if (e.key === 'Escape') { e.preventDefault(); return; }
+  }
   const s = sCss();
   if (e.key === 'v' || e.key === 'V') toggleControls();
   else if (e.key === '+' || e.key === '=') animateTo(view.cx, view.cy, view.zoom + 1, 300);
@@ -798,6 +1093,7 @@ function renderInfo() {
     </section>
 
     <div class="actions">
+      <button class="text-btn" id="act-fly">Fly here</button>
       <button class="text-btn" id="act-center">Centre</button>
       <button class="text-btn" id="act-copy">Copy polynomial</button>
       <button class="text-btn" id="act-link">Copy link</button>
@@ -814,6 +1110,12 @@ function renderInfo() {
     };
   }
   $('act-center').onclick = () => focusOn(alpha.x, alpha.y, view.zoom, 500);
+  $('act-fly').onclick = () => {
+    // a flight from the overview to this number at the current zoom, also put in the editor
+    editor.views = [{ x: alpha.x, y: alpha.y, zoom: Math.max(view.zoom, 1) }];
+    editor.overview = true;
+    startFlight(editorSpec());
+  };
   $('act-copy').onclick = (e) => copyText(Alg.polyText(a, 'x', true), e.target);
   $('act-link').onclick = (e) => { saveHash(); copyText(location.href, e.target); };
 }
@@ -974,11 +1276,125 @@ $('btn-reset-view').onclick = () => { const v = resetView(); animateTo(v.cx, v.c
 function toggleSettings(open) {
   const el = $('settings');
   open = open ?? el.hidden;
+  if (open) toggleFlights(false);
   el.hidden = !open;
   $('btn-settings').setAttribute('aria-expanded', String(open));
   document.body.classList.toggle('settings-open', open);
 }
 $('btn-settings').onclick = () => toggleSettings();
+
+// ---------------------------------------------------------------------------
+// Flight editor
+// ---------------------------------------------------------------------------
+
+const FLIGHTS_KEY = 'algebraic-numbers.flights';
+const editor = { overview: true, views: [], duration: 0, quality: 'standard' };
+
+function editorSpec() {
+  const views = (editor.overview ? [{ overview: true }] : []).concat(editor.views);
+  return views.length >= 2 ? { views, duration: editor.duration, quality: editor.quality } : null;
+}
+
+function toggleFlights(open) {
+  const el = $('flights');
+  open = open ?? el.hidden;
+  if (open) {
+    toggleSettings(false);
+    renderEditor();
+  }
+  el.hidden = !open;
+  $('btn-flights').setAttribute('aria-expanded', String(open));
+  document.body.classList.toggle('settings-open', open);
+}
+$('btn-flights').onclick = () => toggleFlights();
+
+function renderEditor() {
+  const rows = [];
+  if (editor.overview) rows.push('<li class="kf fixed"><span>Overview</span></li>');
+  editor.views.forEach((v, n) => rows.push(
+    `<li class="kf"><button class="kf-go" data-go="${n}" title="Go to this view">${Alg.formatComplex(v.x, v.y, 7)} <span class="sub">${fmtMag(Math.pow(2, v.zoom))}</span></button>`
+    + `<button class="icon-btn" data-del="${n}" title="Remove" aria-label="Remove">×</button></li>`));
+  if (!editor.views.length) rows.push('<li class="kf empty">Zoom in to something you like, then add it here.</li>');
+  const list = $('kf-list');
+  list.innerHTML = rows.join('');
+  for (const b of list.querySelectorAll('[data-go]')) {
+    b.onclick = () => { const v = editor.views[+b.dataset.go]; animateTo(v.x, v.y, v.zoom, 700); };
+  }
+  for (const b of list.querySelectorAll('[data-del]')) {
+    b.onclick = () => { editor.views.splice(+b.dataset.del, 1); renderEditor(); };
+  }
+  const spec = editorSpec();
+  const auto = spec ? Math.round(autoDuration(makePath(resolveViews(spec.views), W, S0_CSS).S)) : 0;
+  $('fl-dur').value = editor.duration;
+  $('fl-dur-out').textContent = editor.duration ? `${editor.duration} s` : spec ? `auto (${auto} s)` : 'auto';
+  $('kf-overview').checked = editor.overview;
+  for (const b of $('fl-quality').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.value === editor.quality));
+  for (const id of ['fl-play', 'fl-link', 'fl-save']) $(id).disabled = !spec;
+  renderSaved();
+}
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(FLIGHTS_KEY) || '[]'); } catch { return []; }
+}
+function storeSaved(list) {
+  try { localStorage.setItem(FLIGHTS_KEY, JSON.stringify(list)); } catch { /* private mode */ }
+}
+
+function renderSaved() {
+  const list = loadSaved();
+  const el = $('fl-saved');
+  el.innerHTML = list.length
+    ? list.map((f, n) => `<div class="saved"><span class="name" title="${esc(f.name)}">${esc(f.name)}</span>`
+      + `<button class="text-btn" data-sp="${n}" title="Play">▶</button><button class="text-btn" data-sl="${n}">Link</button>`
+      + `<button class="icon-btn" data-sd="${n}" title="Delete" aria-label="Delete">×</button></div>`).join('')
+    : '<p class="hint">Saved flights stay in this browser.</p>';
+  for (const b of el.querySelectorAll('[data-sp]')) b.onclick = () => playLink(list[+b.dataset.sp].link);
+  for (const b of el.querySelectorAll('[data-sl]')) b.onclick = (e) => copyText(list[+b.dataset.sl].link, e.target);
+  for (const b of el.querySelectorAll('[data-sd]')) {
+    b.onclick = () => { list.splice(+b.dataset.sd, 1); storeSaved(list); renderSaved(); };
+  }
+}
+
+// Play a flight link, taking on its settings.
+function playLink(link) {
+  const p = new URLSearchParams(link.split('#')[1] || '');
+  const spec = parseFlight(p);
+  if (!spec) return;
+  let changed = false;
+  for (const [k, short] of Object.entries(HASH_KEYS)) {
+    const def = DEFAULT_SETTINGS[k], raw = p.get(short);
+    let v = def;
+    if (raw !== null) v = typeof def === 'boolean' ? raw === '1' : typeof def === 'number' ? parseFloat(raw) : raw;
+    if (v !== settings[k] && !(typeof v === 'number' && !Number.isFinite(v))) { settings[k] = v; changed = true; }
+  }
+  if (changed) { syncSettingsUI(); updateLegend(); invalidate(); }
+  toggleFlights(false);
+  startFlight(spec);
+}
+
+$('kf-add').onclick = () => {
+  editor.views.push({ x: view.cx, y: view.cy, zoom: view.zoom });
+  renderEditor();
+};
+$('kf-overview').onchange = (e) => { editor.overview = e.target.checked; renderEditor(); };
+$('fl-dur').oninput = (e) => { editor.duration = +e.target.value; renderEditor(); };
+$('fl-quality').onclick = (e) => {
+  const b = e.target.closest('button');
+  if (b) { editor.quality = b.dataset.value; renderEditor(); }
+};
+$('fl-play').onclick = () => { const spec = editorSpec(); if (spec) { toggleFlights(false); startFlight(spec); } };
+$('fl-link').onclick = (e) => { const spec = editorSpec(); if (spec) copyText(flightLink(spec), e.target); };
+$('fl-save').onclick = () => {
+  const spec = editorSpec();
+  if (!spec) return;
+  const list = loadSaved();
+  const end = spec.views[spec.views.length - 1];
+  const name = $('fl-name').value.trim() || (end.overview ? 'Flight' : `${Alg.formatComplex(end.x, end.y, 6)} · ${fmtMag(Math.pow(2, end.zoom))}`);
+  list.unshift({ name, link: flightLink(spec), created: Date.now() });
+  storeSaved(list);
+  $('fl-name').value = '';
+  renderSaved();
+};
 $('btn-help').onclick = () => { $('help').hidden = false; renderTexIn($('help')); };
 $('help-close').onclick = () => { $('help').hidden = true; };
 $('help').addEventListener('click', (e) => { if (e.target === $('help')) $('help').hidden = true; });
@@ -1014,9 +1430,13 @@ function updateStatus() {
     const f = (v) => v.toFixed(Math.min(17, digits));
     $('status-pos').textContent = `${f(w.x)} ${w.y < 0 ? '−' : '+'} ${f(Math.abs(w.y))}i`;
   } else $('status-pos').textContent = '';
-  const mag = Math.pow(2, view.zoom);
-  const magText = mag < 1000 ? `${mag < 10 ? mag.toFixed(2) : mag.toFixed(0)}×` : `${mag.toExponential(1).replace('e+', '·10^')}×`;
-  $('status-zoom').textContent = `zoom ${magText}${view.zoom >= MAX_ZOOM ? ' (max)' : ''}`;
+  $('status-zoom').textContent = `zoom ${fmtMag(Math.pow(2, view.zoom))}${view.zoom >= MAX_ZOOM ? ' (max)' : ''}`;
+}
+
+function fmtMag(mag) {
+  if (mag < 1000) return `${mag < 10 ? mag.toFixed(2) : mag.toFixed(0)}×`;
+  const e = Math.floor(Math.log10(mag));
+  return `${(mag / 10 ** e).toFixed(1)}·10${String(e).split('').map((c) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[c]).join('')}×`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,16 +1445,38 @@ function updateStatus() {
 
 const HASH_KEYS = { maxDeg: 'deg', numbers: 'num', colorMode: 'col', highLead: 'hl', dotScale: 'ds', detail: 'det', falloff: 'k', exposure: 'ex', glow: 'gl' };
 
+function settingsParams() {
+  const p = new URLSearchParams();
+  for (const [k, short] of Object.entries(HASH_KEYS)) {
+    if (settings[k] !== DEFAULT_SETTINGS[k]) p.set(short, typeof settings[k] === 'boolean' ? (settings[k] ? '1' : '0') : String(+settings[k] === settings[k] ? +settings[k].toFixed(4) : settings[k]));
+  }
+  return p;
+}
+
+// A link that opens as a flight.
+function flightLink(spec) {
+  const p = settingsParams();
+  p.set('fly', encodeViews(spec.views));
+  if (spec.duration) p.set('dur', String(Math.round(spec.duration)));
+  if (spec.quality === 'sharp') p.set('q', 'sharp');
+  return `${location.origin}${location.pathname}#${p.toString()}`;
+}
+
+function parseFlight(p) {
+  const views = p.has('fly') ? decodeViews(p.get('fly')) : null;
+  if (!views) return null;
+  const dur = parseFloat(p.get('dur'));
+  return { views, duration: Number.isFinite(dur) && dur > 0 ? Math.min(600, dur) : 0, quality: p.get('q') === 'sharp' ? 'sharp' : 'standard' };
+}
+
 function saveHash() {
+  if (pendingFlight || (flight && flight.active)) return; // keep the flight link
   const p = new URLSearchParams();
   const prec = Math.max(6, Math.ceil(Math.log10(sCss())) + 4);
   p.set('x', view.cx.toPrecision(Math.min(17, prec)));
   p.set('y', view.cy.toPrecision(Math.min(17, prec)));
   p.set('z', view.zoom.toFixed(3));
-  const def = DEFAULT_SETTINGS;
-  for (const [k, short] of Object.entries(HASH_KEYS)) {
-    if (settings[k] !== def[k]) p.set(short, typeof settings[k] === 'boolean' ? (settings[k] ? '1' : '0') : String(+settings[k] === settings[k] ? +settings[k].toFixed(4) : settings[k]));
-  }
+  for (const [k, v] of settingsParams()) p.set(k, v);
   if (ui.grid) p.set('grid', '1');
   if (selected) p.set('sel', `${selected.coeffs.join('_')}.${selected.idx}`);
   history.replaceState(null, '', `#${p.toString()}`);
@@ -1063,12 +1505,18 @@ function loadHash() {
   if (settings.numbers === 'integers') settings.colorMode = 'degree';
   ui.grid = p.get('grid') === '1';
   const sel = p.get('sel');
+  const spec = parseFlight(p);
+  if (spec) {
+    const first = resolveViews(spec.views)[0];
+    Object.assign(view, { cx: first.x, cy: first.y, zoom: first.zoom });
+    return { flight: spec };
+  }
   if (sel) {
     const m = sel.match(/^(-?\d+(?:_-?\d+)+)\.(\d+)$/);
     if (m) {
       const coeffs = m[1].split('_').map(Number);
       const idx = +m[2];
-      if (coeffs.length >= 2 && coeffs.length <= 13 && idx < coeffs.length - 1 && coeffs[coeffs.length - 1] > 0) return { coeffs, idx };
+      if (coeffs.length >= 2 && coeffs.length <= 13 && idx < coeffs.length - 1 && coeffs[coeffs.length - 1] > 0) return { sel: { coeffs, idx } };
     }
   }
   return null;
@@ -1080,10 +1528,30 @@ function loadHash() {
 
 W = window.innerWidth;
 H = window.innerHeight;
-const initialSel = loadHash();
+const initial = loadHash();
 syncSettingsUI();
 updateLegend();
 window.addEventListener('resize', resize);
 resize();
-if (initialSel) select(initialSel);
+if (initial && initial.sel) select(initial.sel);
+if (initial && initial.flight) showFlightCard(initial.flight);
 window.addEventListener('load', () => { if (selected) renderInfo(); });
+
+// For scripts and recordings (e.g. pixeldif record --ready "viewer.loaded"
+// --setup "viewer.play({capture: true})" --probe "viewer.probe()").
+window.viewer = {
+  get loaded() { return viewComplete(view); },
+  play(opts = {}) {
+    const spec = opts.spec || pendingFlight || (flight && flight.spec) || editorSpec();
+    if (spec) startFlight(spec, opts);
+    return !!spec;
+  },
+  stop: () => stopFlight(),
+  probe: () => ({ zoom: view.zoom, x: view.cx, y: view.cy, t: flight ? flight.t : 0 }),
+  get crossfade() { return crossfade; },
+  set crossfade(on) { crossfade = !!on; schedule(); requestRender(); },
+  get idle() { return !pool.some((w) => w.job) && queue.length === 0; },
+  get fadeMs() { return fadeMs; },
+  set fadeMs(ms) { fadeMs = Math.max(0, +ms || 0); },
+  animateTo: (cx, cy, zoom, ms) => animateTo(cx, cy, zoom, ms),
+};

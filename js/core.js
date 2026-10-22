@@ -37,7 +37,7 @@ export const DEFAULT_SETTINGS = {
   detail: 0.5,       // smallest dot drawn, in CSS px
   falloff: 1,        // κ
   exposure: 1,
-  glow: 1,
+  glow: 0.5,
   numbers: 'all',    // 'all' | 'integers' (monic only)
 };
 

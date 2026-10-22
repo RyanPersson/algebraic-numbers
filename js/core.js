@@ -583,16 +583,10 @@ export function polyGcdBig(a, b) {
   return a;
 }
 
-// Lattice enumeration: LLL-reduce, then Schnorr–Euchner inside the ellipsoid
-//   (λ/k) Σ (F_i·a / eps_i)² + (1 − λ) |a|²/Lhi² ≤ 1,   λ = k/n,
-// which contains every point satisfying the box constraints (λ = k/n minimises
-// its volume).
-function enumLattice(d, Llo, Lhi, F, eps, ctx, onCand, detectSkip = true) {
-  const n = d + 1, k = F.length, m = n + k;
-  const A = new Float64Array(m * n); // row-major m x n
-  const w1 = Math.sqrt(1 / n), w2 = Math.sqrt(1 - k / n);
-  for (let i = 0; i < k; i++) for (let t = 0; t < n; t++) A[i * n + t] = (w1 * F[i][t]) / eps[i];
-  for (let t = 0; t < n; t++) A[(k + t) * n + t] = w2 / Lhi;
+// LLL-reduce the lattice Z^n under the quadratic form |A a|² (A: m×n, row-major).
+// Returns the unimodular transform U (column j = basis vector j, exact integers)
+// and the Gram–Schmidt data of the reduced basis B = A·U.
+export function lllReduce(A, m, n) {
   const U = new Float64Array(n * n); // column j = coefficients of basis vector j
   for (let t = 0; t < n; t++) U[t * n + t] = 1;
   const B = new Float64Array(n * m); // column-major: B[j*m + r]
@@ -658,6 +652,20 @@ function enumLattice(d, Llo, Lhi, F, eps, ctx, onCand, detectSkip = true) {
   }
   for (let j = 0; j < n; j++) setB(j);
   gs();
+  return { U, B, mu, Bn };
+}
+
+// Lattice enumeration: LLL-reduce, then Schnorr–Euchner inside the ellipsoid
+//   (λ/k) Σ (F_i·a / eps_i)² + (1 − λ) |a|²/Lhi² ≤ 1,   λ = k/n,
+// which contains every point satisfying the box constraints (λ = k/n minimises
+// its volume).
+function enumLattice(d, Llo, Lhi, F, eps, ctx, onCand, detectSkip = true) {
+  const n = d + 1, k = F.length, m = n + k;
+  const A = new Float64Array(m * n); // row-major m x n
+  const w1 = Math.sqrt(1 / n), w2 = Math.sqrt(1 - k / n);
+  for (let i = 0; i < k; i++) for (let t = 0; t < n; t++) A[i * n + t] = (w1 * F[i][t]) / eps[i];
+  for (let t = 0; t < n; t++) A[(k + t) * n + t] = w2 / Lhi;
+  const { U, mu, Bn } = lllReduce(A, m, n);
   // a degenerate Gram–Schmidt norm would make the search below unbounded
   for (let t = 0; t < n; t++) {
     if (!(Bn[t] > 0) || !Number.isFinite(Bn[t])) { ctx.aborted = true; return; }

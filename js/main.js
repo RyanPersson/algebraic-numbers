@@ -1,8 +1,9 @@
 // main.js — map view, tile scheduling, interaction and the info panel.
 import {
   TILE, S0_CSS, DEFAULT_SETTINGS, LEAD_COLORS, DEGREE_COLORS,
-  polyRoots, radiusCss, radiusWorld, makeConfig, COMPLEX, REAL, CIRCLE,
+  polyRoots, radiusCss, radiusWorld, makeConfig, maxLength, COMPLEX, REAL, CIRCLE,
 } from './core.js';
+import { findArcs, traceArc } from './arcs.js';
 import * as Alg from './algebra.js';
 import { makePath, ease, autoDuration, encodeViews, decodeViews } from './flight.js';
 
@@ -387,8 +388,40 @@ function ring(x, y, r, style, dash) {
   g.restore();
 }
 
+function drawArc() {
+  const data = arc.data;
+  const vis = dotVisible(levelConfig());
+  g.save();
+  g.lineWidth = 1.2;
+  g.strokeStyle = 'rgba(255, 190, 90, 0.55)';
+  g.beginPath();
+  data.curve.forEach(([x, y], n) => {
+    const p = toScreen(x, y);
+    if (n === 0) g.moveTo(p.x, p.y);
+    else g.lineTo(p.x, p.y);
+  });
+  g.stroke();
+  g.restore();
+  for (const m of data.members) {
+    if (!m.irreducible || m.t === 0 || !vis(m.a, m.d, m.cls, m.L)) continue;
+    const p = toScreen(m.x, m.y);
+    if (p.x < -40 || p.y < -40 || p.x > W + 40 || p.y > H + 40) continue;
+    g.save();
+    g.lineWidth = 1;
+    g.strokeStyle = 'rgba(255, 200, 120, 0.8)';
+    g.beginPath();
+    g.arc(p.x, p.y, Math.max(5, dotScreenRadius(m.L, m.d, m.cls) + 2.5), 0, 2 * Math.PI);
+    g.stroke();
+    g.restore();
+  }
+  const c = toScreen(data.center.x, data.center.y);
+  const Lq = data.q.reduce((acc, v) => acc + Math.abs(v), 0);
+  ring(c.x, c.y, Math.max(10, dotScreenRadius(Lq, data.q.length - 1, COMPLEX) + 6), 'rgba(255, 190, 90, 0.95)', [3, 4]);
+}
+
 function drawMarkers() {
   if (document.body.classList.contains('clean')) return;
+  if (selected && arc && arc.show && arc.data) drawArc();
   if (selected) {
     const info = selectionInfo();
     info.roots.forEach((c, k) => {
@@ -428,10 +461,16 @@ function drawMarkers() {
 
 function clampZoom(z) { return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM + 0.6, z)); }
 
+let arcTimer = 0;
 function viewChanged() {
   schedule();
   requestRender();
   saveHashSoon();
+  // which arcs show depends on the zoom: look again once it has changed a lot
+  if (selected && arc && Math.abs(view.zoom - arc.zoom) > 1.5) {
+    clearTimeout(arcTimer);
+    arcTimer = setTimeout(() => { if (selected && arc && Math.abs(view.zoom - arc.zoom) > 1.5) renderInfo(); }, 400);
+  }
 }
 
 function zoomAt(px, py, zoom) {
@@ -1013,7 +1052,97 @@ function idealRows(a, info) {
   }).join('');
 }
 
-function renderInfo() {
+// ---- arcs: the family p + t·v the selected dot belongs to (see arcs.js) ----
+
+let arc = null; // {sel, cands, index, data, show}
+let arcShow = true;
+
+const levelConfig = () => makeConfig(settings, sCss(levelZoom(level())), tileDpr);
+
+// Would a dot with this polynomial be drawn at the current zoom and settings?
+function dotVisible(cfg) {
+  return (a, d, cls, L) => d >= 1 && d <= settings.maxDeg
+    && (settings.numbers !== 'integers' || a[d] === 1)
+    && !(settings.numbers !== 'integers' && settings.colorMode === 'lead' && !settings.highLead && a[d] >= 5)
+    && L <= maxLength(cfg, d, cls);
+}
+
+function computeArc() {
+  const a = selected.coeffs, alpha = selectionInfo().roots[selected.idx];
+  const scale = sCss();
+  const cands = findArcs(a, alpha.x, alpha.y, { scale, visible: dotVisible(levelConfig()), viewR: Math.max(W, H) / 2 / scale });
+  arc = { sel: selected, zoom: view.zoom, cands, index: 0, data: null, show: arcShow };
+  if (cands.length) arc.data = traceArc(a, cands[0].v, alpha.x, alpha.y, { scale });
+}
+
+function arcSection(a) {
+  if (!arc.data) {
+    return `<p>No arc of dots runs through this number at this zoom. (Arcs show up when zooming in near a simpler number.)</p>`;
+  }
+  const { v, q, s, center } = arc.data;
+  const sameAsQ = s.length === 1 && s[0] === 1;
+  const vis = dotVisible(levelConfig());
+  const qL = q.reduce((acc, c) => acc + Math.abs(c), 0);
+  const gammaDrawn = vis(q, q.length - 1, center.y === 0 ? REAL : COMPLEX, qL);
+  const why = settings.numbers === 'integers' && q[q.length - 1] !== 1 ? ' (it isn’t drawn: it is not an algebraic integer)'
+    : q.length - 1 > settings.maxDeg ? ' (it isn’t drawn: its degree is above Max degree)' : '';
+  const shown = arc.data.members
+    .filter((m) => m.irreducible && vis(m.a, m.d, m.cls, m.L))
+    .sort((x, y) => Math.abs(x.t) - Math.abs(y.t))
+    .slice(0, 9)
+    .sort((x, y) => x.t - y.t);
+  const rows = shown.map((m) => `<tr class="${m.t === 0 ? 'self' : ''}" data-member="${m.t}"><td>${m.t}</td><td>${tex(Alg.polyTex(m.a))}</td></tr>`).join('');
+  const others = arc.cands.length > 1 ? `<button class="text-btn" id="arc-next">Another arc (${arc.index + 1}/${arc.cands.length})</button>` : '';
+  return `
+      <p>This dot is on an arc of dots: the family ${tex('p(x) + t\\,v(x)')}, ${tex('t \\in \\mathbb{Z}')}, with</p>
+      <div class="math-line">${tex(`v(x) = ${Alg.polyTex(v)}`)}</div>
+      <p>${sameAsQ ? 'the minimal polynomial' : `a multiple of the minimal polynomial ${tex(`q(x) = ${Alg.polyTex(q)}`)}`} of ${tex('\\gamma')} ≈ ${Alg.formatComplex(center.x, center.y, 9)}, ${gammaDrawn ? 'the dot the arc circles' : `the point the arc circles${why}`} (dashed ring).
+      The members are where ${tex('p/v = -t')}. Near ${tex('\\gamma')}, ${tex('p/v')} has a pole, so they lie on a circle through ${tex('\\gamma')} and crowd towards it.
+      Every member has the same value at ${tex('\\gamma')}, ${tex('(p + t\\,v)(\\gamma) = p(\\gamma)')}: the arc is ${sameAsQ ? 'the residue class of ' + tex('p') + ' modulo the ideal ' + tex('(q)') : 'a line in the residue class of ' + tex('p') + ' modulo ' + tex('(q)')}.
+      Gaps are members that factor or have a common divisor.</p>
+      <table class="arc-members">${rows}</table>
+      <div class="actions">
+        <button class="text-btn" id="arc-toggle">${arc.show ? 'Hide arc' : 'Show arc'}</button>
+        <button class="text-btn" id="arc-gamma">Select ${tex('\\gamma')}</button>
+        ${others}
+      </div>`;
+}
+
+function bindArcSection(body) {
+  if (!arc || !arc.data) return;
+  for (const row of body.querySelectorAll('[data-member]')) {
+    row.onclick = () => {
+      const m = arc.data.members.find((mm) => mm.t === +row.dataset.member);
+      if (m && m.t !== 0) select({ coeffs: m.a, idx: m.idx });
+    };
+  }
+  $('arc-toggle').onclick = () => {
+    arcShow = arc.show = !arc.show;
+    $('arc-toggle').textContent = arc.show ? 'Hide arc' : 'Show arc';
+    requestRender();
+  };
+  $('arc-gamma').onclick = () => {
+    const { q, center } = arc.data;
+    const r = polyRoots(q, q.length - 1);
+    let idx = 0, bd = Infinity;
+    for (let k = 0; k < q.length - 1; k++) {
+      const d = Math.hypot(r[2 * k] - center.x, r[2 * k + 1] - center.y);
+      if (d < bd) { bd = d; idx = k; }
+    }
+    select({ coeffs: q, idx });
+  };
+  if ($('arc-next')) {
+    $('arc-next').onclick = () => {
+      const a = selected.coeffs, alpha = selectionInfo().roots[selected.idx];
+      arc.index = (arc.index + 1) % arc.cands.length;
+      arc.data = traceArc(a, arc.cands[arc.index].v, alpha.x, alpha.y, { scale: sCss() });
+      renderInfo(true);
+      requestRender();
+    };
+  }
+}
+
+function renderInfo(keepArc = false) {
   const a = selected.coeffs, d = a.length - 1;
   const sInfo = selectionInfo();
   const alpha = sInfo.roots[selected.idx];
@@ -1042,6 +1171,7 @@ function renderInfo() {
 
   const conjList = sInfo.roots.map((c, k) => `<button class="${k === selected.idx ? 'self' : ''}" data-conj="${k}"><span class="dot" style="opacity:${k === selected.idx ? 1 : 0.45}"></span>${Alg.formatComplex(c.x, c.y, 10)}</button>`).join('');
 
+  if (!keepArc || !arc || arc.sel !== selected) computeArc();
   const html = `
     <h2>${info.isInt ? 'Algebraic integer' : 'Algebraic number'} ${tex('\\alpha')}</h2>
     <div class="value">${Alg.formatComplex(alpha.x, alpha.y, 15)}</div>
@@ -1066,6 +1196,11 @@ function renderInfo() {
         ? (d === 1 ? 'α is a rational integer.' : `A free ${tex('\\mathbb{Z}')}-module of rank ${d}, since ${tex('p')} is monic.`)
         : `Not finitely generated as a ${tex('\\mathbb{Z}')}-module, since α is not an algebraic integer. Instead ${tex(`${lead}\\alpha`)} is, with minimal polynomial ${tex(Alg.polyTex(scaled))}.`}</p>
       <p>Over ${tex('\\mathbb{Q}')}: ${tex(`I_\\alpha\\,\\mathbb{Q}[x] = (m)`)} is maximal and ${tex(`\\mathbb{Q}[x]/(m) \\cong \\mathbb{Q}(\\alpha)`)}, a field of degree ${d}.</p>
+    </section>
+
+    <section>
+      <h3>Arc</h3>
+      ${arcSection(a)}
     </section>
 
     <section>
@@ -1101,6 +1236,7 @@ function renderInfo() {
   const body = $('info-body');
   body.innerHTML = html;
   renderTexIn(body);
+  bindArcSection(body);
   for (const b of body.querySelectorAll('[data-conj]')) {
     b.onclick = () => {
       const k = +b.dataset.conj;

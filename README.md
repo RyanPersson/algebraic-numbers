@@ -60,6 +60,25 @@ switching levels abruptly would make the brightness jump.
   the recorder should wait, so every captured frame is complete.
 - `viewer.probe()` returns the current `{zoom, x, y, t}` for labelling frames.
 
+### Arcs
+
+Zoomed in near a simple algebraic number γ (minimal polynomial q), the dots line up
+in arcs that circle γ. Each arc is a family p + t·q (t ∈ ℤ): consecutive dots
+differ by exactly q. Its roots are the points where p/q = −t. Near γ, p/q has a
+simple pole, p/q ≈ A/(z − γ) + B, so solving gives z ≈ γ + A/(−t − B): the
+integers are mapped onto a circle through γ, and the dots crowd towards γ as |t|
+grows. Every member takes the same value at γ, (p + t·q)(γ) = p(γ), so each arc is
+one residue class modulo the ideal (q), and different circles through γ correspond
+to different elements p(γ) of ℤ[γ]. Gaps in an arc are members that factor or have
+a common divisor. (More generally the step can be a multiple s·q when q has lower
+degree.)
+
+The info panel's **Arc** section finds this family for the selected dot. It
+LLL-reduces the lattice of polynomials that nearly vanish at the dot and picks the
+short step whose family has the most visible dots. It draws the circle (the full
+root locus, following t continuously out to ±∞, where it ends at γ) and lists the
+members.
+
 ## What is drawn
 
 Every algebraic number α is drawn once, from its minimal polynomial

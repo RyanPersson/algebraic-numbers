@@ -427,3 +427,9 @@ body.flying canvas#map { cursor: default; }
 .info .sub { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 .info code, .search-msg code { font: 12px var(--mono); color: var(--text); }
 .search-msg a { color: var(--accent); }
+
+/* arc members in the info panel */
+.info .arc-members tr { cursor: pointer; }
+.info .arc-members tr:hover td { background: rgba(255, 255, 255, 0.05); }
+.info .arc-members tr.self td { color: var(--accent); cursor: default; }
+.info .arc-members td:first-child { text-align: right; font-variant-numeric: tabular-nums; }

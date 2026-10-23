@@ -1688,12 +1688,12 @@ const sonifier = new Sonifier();
 const SOUND_KEY = 'algebraic-numbers.sound.2';
 const SOUND_MAX_DOTS = 8000;
 const sound = {
-  mode: 'ring', exp: 2, pitch: 'value', slow: true,
+  mode: 'ring', exp: 2, pitch: 'value', slow: true, dir: 'in',
   cycles: 8, cycleSec: 14.9, sweepSec: 20, f0: 58.27, maxH: 24, minPx: 0.6, volume: 0.6,
   centre: { x: 0, y: 0, coeffs: [0, 1] }, centreText: '0',
   dots: null, req: null, got: null, res: null, dirty: true, want: false, picking: false,
 };
-const SOUND_SAVED = ['mode', 'exp', 'pitch', 'slow', 'cycles', 'cycleSec', 'sweepSec', 'f0', 'maxH', 'minPx', 'volume', 'centreText'];
+const SOUND_SAVED = ['mode', 'exp', 'pitch', 'slow', 'dir', 'cycles', 'cycleSec', 'sweepSec', 'f0', 'maxH', 'minPx', 'volume', 'centreText'];
 
 const gcdInt = (a, b) => {
   a = Math.abs(a);
@@ -1757,7 +1757,7 @@ const fmtSound = {
 };
 
 function syncSoundUI() {
-  for (const [id, key] of [['snd-mode', 'mode'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
+  for (const [id, key] of [['snd-mode', 'mode'], ['snd-dir', 'dir'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
     for (const b of $(id).querySelectorAll('button')) b.setAttribute('aria-pressed', String(String(sound[key]) === b.dataset.value));
   }
   for (const inp of document.querySelectorAll('input[data-snd]')) {
@@ -1768,6 +1768,7 @@ function syncSoundUI() {
   const ring = sound.mode === 'ring';
   const cyc = ring && sound.slow;
   $('snd-slow-row').hidden = !ring;
+  $('snd-dir-row').hidden = !ring;
   $('snd-slow').checked = sound.slow;
   $('snd-exp-row').hidden = !cyc;
   $('snd-cycles-row').hidden = !cyc;
@@ -1841,7 +1842,7 @@ function rebuildSound() {
   if (!sound.dots) return;
   const got = sound.got;
   sound.res = sweepEvents(sound.dots, {
-    mode: sound.mode, centre: sound.centre, exp: sound.exp, pitch: sound.pitch, slow: sound.slow,
+    mode: sound.mode, centre: sound.centre, exp: sound.exp, pitch: sound.pitch, slow: sound.slow, out: sound.dir === 'out',
     rect: got.rect, sizeK: got.k, minPx: sound.minPx, maxH: sound.maxH,
     cycles: sound.cycles, cycleSec: sound.cycleSec, sweepSec: sound.sweepSec,
   });
@@ -1871,11 +1872,11 @@ function soundInfo(text) {
   const gm = r.geom;
   if (r.cycles) {
     const rEnd = Math.pow(gm.u1, -1 / gm.d);
-    parts.push(`${r.cycles} cycle${r.cycles > 1 ? 's' : ''} in to radius ${+rEnd.toPrecision(2)}, ${r.duration.toFixed(1)} s loop`);
+    parts.push(`${r.cycles} cycle${r.cycles > 1 ? 's' : ''} ${gm.out ? 'out from' : 'in to'} radius ${+rEnd.toPrecision(2)}, ${r.duration.toFixed(1)} s loop`);
   } else parts.push(`${r.duration.toFixed(1)} s loop`);
   let s = `${parts.join(' · ')}.`;
   if (r.maxCycles && r.cycles === r.maxCycles && sound.cycles > r.cycles) s += ' The centre is off screen, so the ring stops once it has crossed the screen.';
-  if (gm.steady) s += ' Steady speed: the rhythm speeds up as the ring closes in.';
+  if (gm.steady) s += gm.out ? ' Steady speed: the rhythm slows down as the ring opens out.' : ' Steady speed: the rhythm speeds up as the ring closes in.';
   else if (r.cycle && r.cycle.kind === 'exact') s += ' In each cycle the dots of value F play exactly F times.';
   else if (r.cycle && r.cycle.kind === 'asymptotic') s += ` One cycle is |q′(γ)| = ${+r.cycle.unit.toPrecision(3)} in 1/r, so the families keep time with their pitch (more exactly further in).`;
   if (sound.dots.length >= SOUND_MAX_DOTS) s += ` Only the biggest ${SOUND_MAX_DOTS.toLocaleString()} dots play.`;
@@ -1951,7 +1952,7 @@ function toggleSound(open) {
 $('btn-sound').onclick = () => toggleSound();
 $('snd-play').onclick = () => soundToggle();
 
-for (const [id, key] of [['snd-mode', 'mode'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
+for (const [id, key] of [['snd-mode', 'mode'], ['snd-dir', 'dir'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
   $(id).addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -2044,7 +2045,8 @@ function drawSound() {
       path(); g.stroke();
     };
     if (gm.mode === 'ring') {
-      const rad = (gm.steady ? gm.r0 + ph * (gm.r1 - gm.r0) : Math.pow(gm.u0 + ph * (gm.u1 - gm.u0), -1 / gm.d)) * sCss();
+      const q = gm.out ? 1 - ph : ph; // how far along the inward path
+      const rad = (gm.steady ? gm.r0 + q * (gm.r1 - gm.r0) : Math.pow(gm.u0 + q * (gm.u1 - gm.u0), -1 / gm.d)) * sCss();
       const c = toScreen(gm.cx, gm.cy);
       if (Number.isFinite(rad) && rad > 0.5 && rad < 1e6) stroke(() => { g.beginPath(); g.arc(c.x, c.y, rad, 0, 2 * Math.PI); });
     } else {

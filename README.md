@@ -5,9 +5,6 @@ any dot to see its minimal polynomial and the ideal of ℤ[x] it determines.
 
 **Live:** https://ryanpersson.github.io/algebraic-numbers/
 
-This project is inspired by, and its look is modelled on, Stephen J. Brooks'
-pictures of the algebraic numbers (see [Inspiration](#inspiration) below).
-
 It is a static site (plain HTML, CSS and ES modules, no build step), so it runs on
 GitHub Pages as is.
 

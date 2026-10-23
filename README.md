@@ -108,7 +108,8 @@ on the view and the settings, not on the dots. With **Slow down towards the
 centre** (the default) it runs the chosen number of cycles of that steady clock:
 the rhythm stays exact, and the ring slows down as it closes in. Without it, the
 ring shrinks at a steady speed all the way to the centre in the sweep length, so
-the rhythm speeds up as it goes.
+the rhythm speeds up as it goes. **Ring moves: Out from the centre** plays the
+same path backwards, with the ring growing from the inside.
 
 Round a complex quadratic centre such as i, the quadratics form families
 p + n·(x² + 1) instead. They are evenly spaced in 1/r (for large n; one cycle is

@@ -262,12 +262,13 @@ export function cycleUnit(c, k, far) {
 //   o: {mode: 'ring' | 'line', centre, exp, pitch: 'value' | 'lead' | 'const',
 //       rect: world rectangle on screen {x0, x1, y0, y1},
 //       sizeK (screen px per dot CSS px), minPx, maxH,
-//       slow, cycles, cycleSec (ring), sweepSec (line, or ring with slow = false)}
+//       slow, out, cycles, cycleSec (ring), sweepSec (line, or ring with slow = false)}
 // The playhead's path and speed depend only on the view, the centre and these
 // settings, never on where the dots are. The ring starts at the farthest corner
 // of the screen. With slow (the default) r^(−k) grows steadily, one cycle per
 // cycleSec, so the rhythm stays exact and the ring slows down as it closes in;
-// without, the ring shrinks at a steady speed to the centre in sweepSec.
+// without, the ring shrinks at a steady speed to the centre in sweepSec. With out,
+// the same path is played backwards: the ring grows from the inner end.
 // Returns {events: [{p, h, amp, pan, x, y, rs}] sorted by p, geom, duration,
 //          cycles, maxCycles, cycle: {unit, kind}, rational}
 export function sweepEvents(dots, o) {
@@ -311,6 +312,11 @@ export function sweepEvents(dots, o) {
       duration = cycles * o.cycleSec;
       geom = { mode: 'ring', cx: c.x, cy: c.y, d: k, u0, u1 };
       coord = (n) => (Math.pow(n.dist, -k) - u0) / (u1 - u0);
+    }
+    if (o.out) {
+      const inwards = coord;
+      coord = (n) => 1 - inwards(n);
+      geom.out = true;
     }
   } else {
     geom = { mode: 'line', x0: o.rect.x0, x1: o.rect.x1 };

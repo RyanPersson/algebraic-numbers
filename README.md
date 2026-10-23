@@ -95,15 +95,24 @@ p + n·(sx − r)² whose roots lie exactly on
 
 &nbsp;&nbsp;&nbsp;&nbsp;1/|z − γ|² = s²·(leading coefficient)/F, with F = s²·p(r/s) an integer
 
-(at γ = 0, the complex roots of ax² + bx + c have |z|² = c/a). So if the ring
-shrinks so that 1/r² grows at a steady rate, the family with value F is crossed
-exactly F times per cycle, and plays at F times the base pitch. Rhythm and pitch
-are both a harmonic series: the same structure as a "1:2:3:…" polyrhythm, where a
-line slides across a grid. One cycle of the fan at 0 on a desktop screen holds
-harmonics 1–19.
+(at γ = 0, the complex roots of ax² + bx + c have |z|² = c/a), and the leading
+coefficient only takes every s-th value (a ≡ F·r⁻² mod s). So the dots of value F
+recur every s³/F in 1/r². If the ring shrinks so that 1/r² grows at a steady rate,
+one cycle being s³, the dots of value F are crossed exactly F times per cycle and
+play at F times the base pitch. Rhythm and pitch are both a harmonic series: the
+same structure as a "1:2:3:…" polyrhythm, where a line slides across a grid. On a
+desktop screen, the fan at 0 holds harmonics 1–19.
+
+The ring starts at the farthest corner of the screen, and its speed depends only
+on the view and the settings, not on the dots. With **Slow down towards the
+centre** (the default) it runs the chosen number of cycles of that steady clock:
+the rhythm stays exact, and the ring slows down as it closes in. Without it, the
+ring shrinks at a steady speed all the way to the centre in the sweep length, so
+the rhythm speeds up as it goes.
 
 Round a complex quadratic centre such as i, the quadratics form families
-p + n·(x² + 1) instead. They are evenly spaced in 1/r (for large n), and their
+p + n·(x² + 1) instead. They are evenly spaced in 1/r (for large n; one cycle is
+|q′(γ)|, which is 2 at i), and their
 values |p(i)| = √(b² + c²) are square roots of integers, the same numbers that
 set the overtones of a square drumhead. Round ω = e^(iπ/3) they are
 √(a² + ab + b²), as for a triangular drum. Picking a centre selects the matching

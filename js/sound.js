@@ -5,7 +5,7 @@
 // p + n·q^k) are equally spaced in u = |z − γ|^(−k), at a spacing inversely
 // proportional to their value |p(γ)|. For the fans of quadratics at a rational
 // centre (k = 2) this is exact: at γ = 0 the roots of n x² + b x + c have
-// |z|^(−2) = n/c. So a ring around γ whose radius falls so that r^(−k) grows
+// |z|^(−2) = n/c (see cycleUnit for r/s). So a ring around γ whose radius falls so that r^(−k) grows
 // steadily is the analogue of a line sliding across a polyrhythm grid: family c
 // ticks c times as often as family 1. The natural pitch is the family's value at
 // γ, an integer at rational centres, so rhythm and pitch are both a harmonic
@@ -225,26 +225,63 @@ export function centreValue(a, c) {
   return Math.hypot(pr, pi);
 }
 
+// The view's distances from the centre: its farthest corner and its nearest point
+// (0 when the centre is on screen).
+export function screenRadii(c, rect) {
+  const corners = [[rect.x0, rect.y0], [rect.x1, rect.y0], [rect.x0, rect.y1], [rect.x1, rect.y1]];
+  const far = Math.max(...corners.map(([x, y]) => Math.hypot(x - c.x, y - c.y)));
+  const dx = Math.max(rect.x0 - c.x, 0, c.x - rect.x1), dy = Math.max(rect.y0 - c.y, 0, c.y - rect.y1);
+  return { far, near: Math.hypot(dx, dy) };
+}
+
+// One cycle of the ring's clock, in u = r^(−k), and whether it is exact.
+//  - rational centre r/s, k = 2: the dots of value F sit at u = s²·a/F with the
+//    leading coefficient a ≡ F·r⁻² (mod s), so value F recurs every s³/F: one
+//    cycle is s³, and in it value F plays exactly F times.
+//  - algebraic centre γ of degree ≥ 2, k = 1: the family p + n·q has
+//    u ≈ n·|q′(γ)|/|p(γ)|, so one cycle is |q′(γ)| (for large n).
+//  - otherwise there is no natural cycle: one cycle is the first halving of
+//    the radius, from the farthest corner of the screen.
+export function cycleUnit(c, k, far) {
+  if (isRationalCentre(c) && k === 2) return { unit: Math.pow(c.coeffs[1], 3), kind: 'exact' };
+  if (c.coeffs && c.coeffs.length > 2 && k === 1) {
+    const a = c.coeffs;
+    let pr = 0, pi = 0;
+    for (let j = a.length - 1; j >= 1; j--) {
+      const t = pr * c.x - pi * c.y + j * a[j];
+      pi = pr * c.y + pi * c.x;
+      pr = t;
+    }
+    return { unit: Math.hypot(pr, pi), kind: 'asymptotic' };
+  }
+  return { unit: (Math.pow(2, k) - 1) * Math.pow(far, -k), kind: 'none' };
+}
+
 // Notes for one sweep.
 //   dots: [{x, y, d, r, a}], r in CSS px at the zoom the dots were computed for
 //   o: {mode: 'ring' | 'line', centre, exp, pitch: 'value' | 'lead' | 'const',
 //       rect: world rectangle on screen {x0, x1, y0, y1},
 //       sizeK (screen px per dot CSS px), minPx, maxH,
-//       cycles, cycleSec (rational centres, ring 1/r²), sweepSec (otherwise)}
+//       slow, cycles, cycleSec (ring), sweepSec (line, or ring with slow = false)}
+// The playhead's path and speed depend only on the view, the centre and these
+// settings, never on where the dots are. The ring starts at the farthest corner
+// of the screen. With slow (the default) r^(−k) grows steadily, one cycle per
+// cycleSec, so the rhythm stays exact and the ring slows down as it closes in;
+// without, the ring shrinks at a steady speed to the centre in sweepSec.
 // Returns {events: [{p, h, amp, pan, x, y, rs}] sorted by p, geom, duration,
-//          cycles, totalCycles, rational}
+//          cycles, maxCycles, cycle: {unit, kind}, rational}
 export function sweepEvents(dots, o) {
   const c = o.centre;
   const rational = o.pitch === 'value' && isRationalCentre(c);
   const value = (dt) => (o.pitch === 'lead' ? dt.a[dt.d] : o.pitch === 'const' ? Math.abs(dt.a[0]) : centreValue(dt.a, c));
-  // the dots that sound, with their pitch and sweep coordinate
+  // the dots that sound, with their pitch
   const notes = [];
   for (const dt of dots) {
     const rs = dt.r * o.sizeK;
     if (rs < o.minPx) continue;
-    const u = o.mode === 'ring' ? Math.pow(Math.hypot(dt.x - c.x, dt.y - c.y), -o.exp) : dt.x;
-    if (!Number.isFinite(u)) continue;
-    notes.push({ dt, rs, u, v: value(dt) });
+    const dist = Math.hypot(dt.x - c.x, dt.y - c.y);
+    if (o.mode === 'ring' && !(dist > 0)) continue;
+    notes.push({ dt, rs, dist, v: value(dt) });
   }
   // Elsewhere the lowest value present is the base pitch (at an algebraic centre;
   // at i, |p(i)| = √(b² + c²) ≥ 1), or a low percentile at an arbitrary point.
@@ -257,42 +294,35 @@ export function sweepEvents(dots, o) {
     n.h = rational ? Math.round(n.v) : n.v / unitV;
     return n.h >= 0.5 && n.h <= o.maxH;
   });
-  let geom, duration = o.sweepSec, cycles = null, totalCycles = null;
+  let geom, coord, duration = o.sweepSec, cycles = null, maxCycles = null, cycle = null;
   if (o.mode === 'ring') {
-    let u0 = Infinity, u1 = -Infinity;
-    for (const n of kept) { u0 = Math.min(u0, n.u); u1 = Math.max(u1, n.u); }
-    if (!kept.length) { u0 = 0; u1 = 1; }
-    // Quadratics at a rational centre r/s sit exactly at 1/|z − γ|² = s²·a₂/F, with
-    // F the pitch: the polyrhythm repeats every s² in u. Play whole cycles, from
-    // the fullest one (the outermost is usually cut off by the screen) inwards.
-    if (isRationalCentre(c) && o.exp === 2) {
-      const unit = c.coeffs[1] * c.coeffs[1];
-      const first = Math.floor(u0 / unit), last = Math.max(first + 1, Math.ceil(u1 / unit));
-      const count = new Map();
-      for (const n of kept) {
-        const m = Math.floor(n.u / unit);
-        count.set(m, (count.get(m) || 0) + 1);
-      }
-      let m0 = first, best = -1;
-      for (const [m, k] of count) if (k > best || (k === best && m < m0)) { best = k; m0 = m; }
-      totalCycles = last - first;
-      cycles = Math.max(1, Math.min(o.cycles || 1, last - m0));
-      u0 = m0 * unit;
-      u1 = (m0 + cycles) * unit;
+    const k = o.exp;
+    const { far, near } = screenRadii(c, o.rect);
+    if (o.slow === false) {
+      geom = { mode: 'ring', cx: c.x, cy: c.y, steady: true, r0: far, r1: near };
+      coord = (n) => (far - n.dist) / (far - near);
+    } else {
+      cycle = cycleUnit(c, k, far);
+      const u0 = Math.pow(far, -k);
+      // past the screen's nearest point there is nothing more to hear
+      if (near > 0) maxCycles = Math.max(1, Math.ceil((Math.pow(near, -k) - u0) / cycle.unit));
+      cycles = Math.max(1, Math.min(o.cycles || 1, maxCycles || Infinity));
+      const u1 = u0 + cycles * cycle.unit;
       duration = cycles * o.cycleSec;
-    } else u1 = u0 + (u1 - u0) * 1.000001 + 1e-300;
-    geom = { mode: 'ring', cx: c.x, cy: c.y, d: o.exp, u0, u1 };
+      geom = { mode: 'ring', cx: c.x, cy: c.y, d: k, u0, u1 };
+      coord = (n) => (Math.pow(n.dist, -k) - u0) / (u1 - u0);
+    }
   } else {
     geom = { mode: 'line', x0: o.rect.x0, x1: o.rect.x1 };
+    coord = (n) => (n.dt.x - o.rect.x0) / (o.rect.x1 - o.rect.x0);
   }
-  const lo = geom.mode === 'ring' ? geom.u0 : geom.x0, hi = geom.mode === 'ring' ? geom.u1 : geom.x1;
   const events = [];
   for (const n of kept) {
-    const p = (n.u - lo) / (hi - lo);
+    const p = coord(n);
     if (!(p >= 0 && p < 1)) continue;
     const pan = ((n.dt.x - o.rect.x0) / (o.rect.x1 - o.rect.x0)) * 1.4 - 0.7;
     events.push({ p, h: n.h, amp: Math.min(1, Math.pow(n.rs / 10, 0.8)), pan, x: n.dt.x, y: n.dt.y, rs: n.rs });
   }
   events.sort((a, b) => a.p - b.p);
-  return { events, geom, duration, cycles, totalCycles, rational };
+  return { events, geom, duration, cycles, maxCycles, cycle, rational };
 }

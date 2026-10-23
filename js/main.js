@@ -6,6 +6,7 @@ import {
 import { findArcs, traceArc } from './arcs.js';
 import * as Alg from './algebra.js';
 import { makePath, ease, autoDuration, encodeViews, decodeViews } from './flight.js';
+import { Sonifier, sweepEvents, isRationalCentre } from './sound.js';
 
 const MIN_ZOOM = -3;
 const MAX_ZOOM = 32; // beyond this, double precision runs out
@@ -205,6 +206,7 @@ function invalidate(keepStale = true) {
   queue = [];
   schedule();
   requestRender();
+  soundFetchSoon();
 }
 
 function setTileDpr(d) {
@@ -324,11 +326,12 @@ function render() {
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (ui.grid) drawGrid();
   drawMarkers();
+  drawSound();
   evict();
   updateStatus();
   positionTooltip();
   if (flight && flight.capture) signalCapture(viewComplete(view));
-  if (fading || (flash && performance.now() - flash.t0 < 1600) || (flight && flight.active)) requestRender();
+  if (fading || (flash && performance.now() - flash.t0 < 1600) || (flight && flight.active) || sonifier.playing) requestRender();
 }
 
 function niceStep(minWorld) {
@@ -466,6 +469,7 @@ function viewChanged() {
   schedule();
   requestRender();
   saveHashSoon();
+  soundFetchSoon();
   // which arcs show depends on the zoom: look again once it has changed a lot
   if (selected && arc && Math.abs(view.zoom - arc.zoom) > 1.5) {
     clearTimeout(arcTimer);
@@ -567,6 +571,7 @@ const flightView = (f, t) => f.path.viewAt(f.path.S * ease(f.T > 0 ? t / f.T : 1
 // spec: {views: [{x, y, zoom} | {overview: true}], duration (s, 0 = automatic), quality}
 function startFlight(spec, opts = {}) {
   stopAnim();
+  if (sonifier.playing || sound.want) soundToggle(false); // the notes are for the view it leaves
   pendingFlight = null;
   $('flight-card').hidden = true;
   $('flight-end').hidden = true;
@@ -828,6 +833,7 @@ window.addEventListener('keydown', (e) => {
   }
   const s = sCss();
   if (e.key === 'v' || e.key === 'V') toggleControls();
+  else if (e.key === 'l' || e.key === 'L') soundToggle();
   else if (e.key === '+' || e.key === '=') animateTo(view.cx, view.cy, view.zoom + 1, 300);
   else if (e.key === '-' || e.key === '_') animateTo(view.cx, view.cy, view.zoom - 1, 300);
   else if (e.key === 'ArrowLeft') animateTo(view.cx - W / 5 / s, view.cy, view.zoom, 250);
@@ -837,7 +843,9 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === '/') { e.preventDefault(); $('search-input').focus(); }
   else if (e.key === 'Escape') {
     if (!$('help').hidden) $('help').hidden = true;
+    else if (sound.picking) setPicking(false);
     else if (!$('settings').hidden) toggleSettings(false);
+    else if (!$('sound').hidden) toggleSound(false);
     else select(null);
   } else return;
   e.preventDefault();
@@ -907,6 +915,7 @@ function setHover(hit) {
 }
 
 function clickAt(px, py) {
+  if (sound.picking) { pickCentre(px, py); return; }
   postQuery(px, py, (hit) => {
     if (!hit) { select(null); return; }
     const roots = polyRoots(hit.coeffs, hit.d);
@@ -1412,7 +1421,7 @@ $('btn-reset-view').onclick = () => { const v = resetView(); animateTo(v.cx, v.c
 function toggleSettings(open) {
   const el = $('settings');
   open = open ?? el.hidden;
-  if (open) toggleFlights(false);
+  if (open) { toggleFlights(false); toggleSound(false); }
   el.hidden = !open;
   $('btn-settings').setAttribute('aria-expanded', String(open));
   document.body.classList.toggle('settings-open', open);
@@ -1436,6 +1445,7 @@ function toggleFlights(open) {
   open = open ?? el.hidden;
   if (open) {
     toggleSettings(false);
+    toggleSound(false);
     renderEditor();
   }
   el.hidden = !open;
@@ -1535,7 +1545,7 @@ $('fl-save').onclick = () => {
 // The panel folds away into a small button (remembered in this browser).
 const COLLAPSED_KEY = 'algebraic-numbers.panel-collapsed';
 function setPanelCollapsed(collapsed) {
-  if (collapsed) { toggleSettings(false); toggleFlights(false); }
+  if (collapsed) { toggleSettings(false); toggleFlights(false); toggleSound(false); }
   $('brand').hidden = collapsed;
   $('brand-mini').hidden = !collapsed;
   try { localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
@@ -1670,13 +1680,387 @@ function loadHash() {
 }
 
 // ---------------------------------------------------------------------------
+// Listen (the sound player in js/sound.js)
+// ---------------------------------------------------------------------------
+// A worker of its own lists every dot on screen, so the hover queries stay quick.
+
+const sonifier = new Sonifier();
+const SOUND_KEY = 'algebraic-numbers.sound';
+const SOUND_MAX_DOTS = 8000;
+const sound = {
+  mode: 'ring', exp: 2, pitch: 'value',
+  cycles: 1, cycleSec: 14.9, sweepSec: 20, f0: 58.27, maxH: 24, minPx: 0.6, volume: 0.6,
+  centre: { x: 0, y: 0, coeffs: [0, 1] }, centreText: '0',
+  dots: null, req: null, got: null, res: null, dirty: true, want: false, picking: false,
+};
+const SOUND_SAVED = ['mode', 'exp', 'pitch', 'cycles', 'cycleSec', 'sweepSec', 'f0', 'maxH', 'minPx', 'volume', 'centreText'];
+
+const gcdInt = (a, b) => {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  while (b) [a, b] = [b, a % b];
+  return a;
+};
+
+function rationalCentre(r, s) {
+  if (s < 0) { r = -r; s = -s; }
+  const d = gcdInt(r, s) || 1;
+  r /= d;
+  s /= d;
+  return { x: r / s, y: 0, coeffs: [-r, s] };
+}
+
+// "0", "1/2", "0.25", "x^2+1" (its root nearest the middle of the screen), "0.5+0.87i"
+function parseCentre(text) {
+  const t = text.trim().replace(/[−–]/g, '-').replace(/½/g, '1/2');
+  const m = t.match(/^([+-]?\d+)(?:\s*\/\s*(\d+))?$/);
+  if (m && (!m[2] || +m[2] > 0)) return rationalCentre(+m[1], m[2] ? +m[2] : 1);
+  const dm = t.match(/^[+-]?\d*\.(\d{1,6})$/);
+  if (dm) return rationalCentre(Math.round(+t * 10 ** dm[1].length), 10 ** dm[1].length);
+  const poly = Alg.parsePolynomial(t);
+  if (poly) {
+    let best = null;
+    for (const f of Alg.factorOverZ(poly)) {
+      const d = f.length - 1;
+      if (d < 1) continue;
+      const r = polyRoots(f, d);
+      for (let k = 0; k < d; k++) {
+        const dist = Math.hypot(r[2 * k] - view.cx, r[2 * k + 1] - view.cy);
+        if (!best || dist < best.dist) best = { dist, x: r[2 * k], y: r[2 * k + 1], coeffs: f };
+      }
+    }
+    if (best) return best.coeffs.length === 2 ? rationalCentre(-best.coeffs[0], best.coeffs[1]) : { x: best.x, y: best.y, coeffs: best.coeffs };
+  }
+  const p = Alg.parseComplex(t);
+  return p ? { x: p.x, y: p.y, coeffs: null } : null;
+}
+
+function centreText(c) {
+  if (isRationalCentre(c)) return c.coeffs[1] === 1 ? String(-c.coeffs[0]) : `${-c.coeffs[0]}/${c.coeffs[1]}`;
+  if (c.coeffs) return Alg.polyText(c.coeffs, 'x', true).replace(/ /g, '');
+  return Alg.formatComplex(c.x, c.y, 8);
+}
+
+function centreLabel(c) {
+  if (isRationalCentre(c)) return '· rational';
+  return `≈ ${Alg.formatComplex(c.x, c.y, 5)}`;
+}
+
+const fmtSound = {
+  cycles: (v) => String(v),
+  cycleSec: (v) => `${(+v).toFixed(1)} s`,
+  sweepSec: (v) => `${v} s`,
+  f0: (v) => `${(+v).toFixed(1)} Hz`,
+  maxH: (v) => String(v),
+  minPx: (v) => `${(+v).toFixed(1)} px`,
+  volume: (v) => `${Math.round(v * 100)}%`,
+};
+
+function syncSoundUI() {
+  for (const [id, key] of [['snd-mode', 'mode'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
+    for (const b of $(id).querySelectorAll('button')) b.setAttribute('aria-pressed', String(String(sound[key]) === b.dataset.value));
+  }
+  for (const inp of document.querySelectorAll('input[data-snd]')) {
+    const key = inp.dataset.snd;
+    if (document.activeElement !== inp) inp.value = sound[key];
+    document.querySelector(`output[data-snd-out="${key}"]`).textContent = fmtSound[key](sound[key]);
+  }
+  const ring = sound.mode === 'ring';
+  const cyc = ring && sound.exp === 2 && isRationalCentre(sound.centre);
+  $('snd-exp-row').hidden = !ring;
+  $('snd-cycles-row').hidden = !cyc;
+  $('snd-cyclesec-row').hidden = !cyc;
+  $('snd-sweepsec-row').hidden = cyc;
+  if (document.activeElement !== $('snd-centre')) $('snd-centre').value = sound.centreText;
+  $('snd-centre-out').textContent = centreLabel(sound.centre);
+  const on = sonifier.playing || sound.want;
+  $('snd-play').textContent = on ? '■ Stop' : '▶ Play';
+  $('snd-play').classList.toggle('playing', on);
+  $('snd-pick').classList.toggle('on', sound.picking);
+  $('btn-sound').classList.toggle('on', on);
+}
+
+function saveSound() {
+  try { localStorage.setItem(SOUND_KEY, JSON.stringify(Object.fromEntries(SOUND_SAVED.map((k) => [k, sound[k]])))); } catch { /* private mode */ }
+}
+
+function loadSound() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(SOUND_KEY)); } catch { /* private mode */ }
+  if (!saved || typeof saved !== 'object') return;
+  for (const k of SOUND_SAVED) if (typeof saved[k] === typeof sound[k]) sound[k] = saved[k];
+  const c = parseCentre(sound.centreText);
+  if (c) sound.centre = c;
+  else sound.centreText = centreText(sound.centre);
+}
+
+const soundActive = () => !$('sound').hidden || sonifier.playing || sound.want;
+
+let sWorker = null, sBusy = false, sAgain = false, sTimer = 0;
+function soundFetchSoon(ms = 300) {
+  sound.dirty = true;
+  if (!soundActive()) return;
+  clearTimeout(sTimer);
+  sTimer = setTimeout(soundFetch, ms);
+}
+
+// Every dot on screen at the level the tiles are drawn at, biggest first.
+function soundFetch() {
+  clearTimeout(sTimer);
+  if (flight && flight.active) return;
+  if (sBusy) { sAgain = true; return; }
+  if (!sWorker) {
+    sWorker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    sWorker.onmessage = onSoundDots;
+  }
+  const z = levelZoom(level());
+  const k = Math.pow(2, view.zoom - z);
+  const a = toWorld(0, 0), b = toWorld(W, H);
+  const rect = { x0: a.x, x1: b.x, y0: b.y, y1: a.y };
+  sound.req = { rect, k, minPx: sound.minPx };
+  sound.dirty = false;
+  sBusy = true;
+  sWorker.postMessage({
+    type: 'dots', id: 0, ...rect, z, dpr: tileDpr, settings: { ...settings },
+    minCss: sound.minPx / k, max: SOUND_MAX_DOTS,
+  });
+  if (!sound.res) soundInfo('Finding the dots on screen…');
+}
+
+function onSoundDots(ev) {
+  sBusy = false;
+  sound.dots = ev.data.dots;
+  sound.got = sound.req;
+  rebuildSound();
+  if (sAgain) { sAgain = false; soundFetch(); }
+}
+
+function rebuildSound() {
+  if (!sound.dots) return;
+  const got = sound.got;
+  sound.res = sweepEvents(sound.dots, {
+    mode: sound.mode, centre: sound.centre, exp: sound.exp, pitch: sound.pitch,
+    rect: got.rect, sizeK: got.k, minPx: sound.minPx, maxH: sound.maxH,
+    cycles: sound.cycles, cycleSec: sound.cycleSec, sweepSec: sound.sweepSec,
+  });
+  sonifier.setEvents(sound.res.events, sound.res.duration, sound.f0, sound.volume);
+  if (sound.want && !sonifier.playing) sonifier.play().then(syncSoundUI);
+  soundInfo();
+  syncSoundUI();
+  requestRender();
+}
+
+const fmtH = (h) => (Number.isInteger(h) ? String(h) : h.toFixed(2));
+
+function soundInfo(text) {
+  const el = $('snd-info');
+  if (text !== undefined) { el.textContent = text; return; }
+  const r = sound.res;
+  if (!r) { el.textContent = ''; return; }
+  if (!r.events.length) {
+    el.textContent = 'Nothing to play here. Zoom out, lower “Smallest dot that plays” or raise “Highest harmonic”.';
+    return;
+  }
+  const hs = [...new Set(r.events.map((e) => (r.rational ? e.h : Math.round(e.h * 100) / 100)))].sort((a, b) => a - b);
+  const parts = [`${r.events.length.toLocaleString()} notes from ${sound.dots.length.toLocaleString()} dots`];
+  parts.push(r.rational
+    ? `harmonics ${hs[0]}–${hs[hs.length - 1]} (${hs.length} different)`
+    : `${hs.length} different pitches, ${fmtH(hs[0])}–${fmtH(hs[hs.length - 1])} × base`);
+  parts.push(r.cycles
+    ? `${r.cycles} of the ${r.totalCycles.toLocaleString()} cycles on screen, ${r.duration.toFixed(1)} s loop`
+    : `${r.duration.toFixed(1)} s loop`);
+  let s = `${parts.join(' · ')}.`;
+  if (sound.dots.length >= SOUND_MAX_DOTS) s += ` Only the biggest ${SOUND_MAX_DOTS.toLocaleString()} dots play.`;
+  const c = sound.centre;
+  if (sound.pitch === 'value' && !r.rational) s += ' The centre isn’t rational, so the pitches aren’t whole multiples of the base: it sounds more like a drum or a bell.';
+  if (sound.mode === 'ring' && c.coeffs) {
+    const want = c.coeffs.length === 2 ? 2 : 1;
+    if (sound.exp !== want) s += ` The families round this centre are evenly spaced with clock 1/r${want === 2 ? '²' : ''}.`;
+  }
+  el.textContent = s;
+}
+
+async function soundToggle(on = !(sonifier.playing || sound.want)) {
+  if (on) {
+    if (flight || pendingFlight) stopFlight();
+    sonifier.unlock(); // browsers only let audio start inside a click or key press
+    sound.want = true;
+    if (sound.res && sound.res.events.length) await sonifier.play();
+    if (!sound.got || sound.dirty) soundFetch();
+  } else {
+    sound.want = false;
+    sonifier.stop();
+  }
+  syncSoundUI();
+  requestRender();
+}
+
+// The ring clock that spaces the families round c evenly: 1/r² at a rational
+// centre (quadratics form fans p + n·q²), 1/r round an algebraic one (p + n·q).
+function setCentre(c, text, exp = c.coeffs ? (c.coeffs.length === 2 ? 2 : 1) : sound.exp) {
+  sound.centre = c;
+  sound.exp = exp;
+  sound.centreText = text ?? centreText(c);
+  saveSound();
+  syncSoundUI();
+  rebuildSound();
+}
+
+function setPicking(on) {
+  sound.picking = on;
+  document.body.classList.toggle('picking', on);
+  syncSoundUI();
+  if (on) soundInfo('Click a dot on the map to put the centre there.');
+  else soundInfo();
+}
+
+function pickCentre(px, py) {
+  setPicking(false);
+  postQuery(px, py, (hit) => {
+    if (hit) setCentre(hit.d === 1 ? rationalCentre(-hit.coeffs[0], hit.coeffs[1]) : { x: hit.x, y: hit.y, coeffs: hit.coeffs });
+    else {
+      const w = toWorld(px, py);
+      setCentre({ x: w.x, y: w.y, coeffs: null });
+    }
+  }, true);
+}
+
+function toggleSound(open) {
+  const el = $('sound');
+  open = open ?? el.hidden;
+  if (open) { toggleSettings(false); toggleFlights(false); }
+  el.hidden = !open;
+  $('btn-sound').setAttribute('aria-expanded', String(open));
+  document.body.classList.toggle('settings-open', open);
+  if (!open && sound.picking) setPicking(false);
+  if (open) {
+    syncSoundUI();
+    if (!sound.got || sound.dirty) soundFetch();
+    else soundInfo();
+  }
+  requestRender();
+}
+$('btn-sound').onclick = () => toggleSound();
+$('snd-play').onclick = () => soundToggle();
+
+for (const [id, key] of [['snd-mode', 'mode'], ['snd-exp', 'exp'], ['snd-pitch', 'pitch']]) {
+  $(id).addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    sound[key] = key === 'exp' ? +b.dataset.value : b.dataset.value;
+    saveSound();
+    syncSoundUI();
+    rebuildSound();
+  });
+}
+for (const inp of document.querySelectorAll('input[data-snd]')) {
+  const key = inp.dataset.snd;
+  inp.addEventListener('input', () => {
+    sound[key] = +inp.value;
+    document.querySelector(`output[data-snd-out="${key}"]`).textContent = fmtSound[key](sound[key]);
+    if (key === 'minPx' && (!sound.got || sound.minPx < sound.got.minPx)) soundFetchSoon(150);
+    else rebuildSound();
+  });
+  inp.addEventListener('change', saveSound);
+}
+$('snd-centre').addEventListener('change', () => {
+  const text = $('snd-centre').value.trim();
+  const c = text ? parseCentre(text) : null;
+  if (c) setCentre(c, text);
+  else $('snd-centre-out').textContent = '· couldn’t read that';
+});
+$('snd-pick').onclick = () => setPicking(!sound.picking);
+$('snd-sel').onclick = () => {
+  if (!selected) { soundInfo('Click a number on the map first, then press Selected.'); return; }
+  const a = selected.coeffs, r = selectionInfo().roots[selected.idx];
+  setCentre(a.length === 2 ? rationalCentre(-a[0], a[1]) : { x: r.x, y: r.y, coeffs: a.slice() });
+};
+
+// Views where the sound is clearest: quadratics only, small dots included.
+// at: the centre's place on screen (bottom: just above the bottom edge).
+const SOUND_PRESETS = {
+  zero: { centre: rationalCentre(0, 1), zoom: 0, at: 'bottom', sweep: {} },
+  half: { centre: rationalCentre(1, 2), zoom: 1, at: 'bottom', sweep: {} },
+  i: { centre: { x: 0, y: 1, coeffs: [1, 0, 1] }, zoom: 2, at: 'middle', sweep: { sweepSec: 20 } },
+  w: { centre: { x: 0.5, y: Math.sqrt(3) / 2, coeffs: [1, -1, 1] }, zoom: 2, at: 'middle', sweep: { sweepSec: 20 } },
+};
+function soundPreset(name) {
+  const pr = SOUND_PRESETS[name];
+  Object.assign(sound, { mode: 'ring', pitch: 'value', cycles: 1, cycleSec: 14.9, minPx: 0.3, maxH: 24 }, pr.sweep);
+  Object.assign(settings, { maxDeg: 2, detail: 0.2 });
+  syncSettingsUI();
+  updateLegend();
+  invalidate();
+  if (selected) renderInfo();
+  setCentre(pr.centre);
+  const c = pr.centre;
+  animateTo(c.x, pr.at === 'bottom' ? c.y + (H / 2 - 24) / sCss(pr.zoom) : c.y, pr.zoom, 700);
+  soundToggle(true);
+}
+for (const b of document.querySelectorAll('[data-preset]')) b.onclick = () => soundPreset(b.dataset.preset);
+
+// The playhead, the centre and the dots that just played. Drawn with the
+// controls hidden too, so it can be recorded.
+function drawSound() {
+  const open = !$('sound').hidden && !document.body.classList.contains('clean');
+  const playing = sonifier.playing;
+  if (!open && !playing) return;
+  const r = sound.res;
+  g.save();
+  if (sound.mode === 'ring') {
+    const c = toScreen(sound.centre.x, sound.centre.y);
+    g.lineWidth = 1.2;
+    g.strokeStyle = 'rgba(255, 106, 77, 0.9)';
+    g.beginPath();
+    g.moveTo(c.x - 7, c.y); g.lineTo(c.x - 2.5, c.y);
+    g.moveTo(c.x + 2.5, c.y); g.lineTo(c.x + 7, c.y);
+    g.moveTo(c.x, c.y - 7); g.lineTo(c.x, c.y - 2.5);
+    g.moveTo(c.x, c.y + 2.5); g.lineTo(c.x, c.y + 7);
+    g.stroke();
+  }
+  const ph = sonifier.phase();
+  if (r && ph !== null) {
+    const gm = r.geom;
+    const stroke = (path) => {
+      g.lineWidth = 4;
+      g.strokeStyle = 'rgba(255, 106, 77, 0.18)';
+      path(); g.stroke();
+      g.lineWidth = 1.3;
+      g.strokeStyle = 'rgba(255, 120, 90, 0.95)';
+      path(); g.stroke();
+    };
+    if (gm.mode === 'ring') {
+      const u = gm.u0 + ph * (gm.u1 - gm.u0);
+      const rad = Math.pow(u, -1 / gm.d) * sCss();
+      const c = toScreen(gm.cx, gm.cy);
+      if (Number.isFinite(rad) && rad > 0.5 && rad < 1e6) stroke(() => { g.beginPath(); g.arc(c.x, c.y, rad, 0, 2 * Math.PI); });
+    } else {
+      const x = toScreen(gm.x0 + ph * (gm.x1 - gm.x0), 0).x;
+      stroke(() => { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); });
+    }
+    g.lineWidth = 1.5;
+    for (const h of sonifier.recentHits()) {
+      const p = toScreen(h.x, h.y);
+      if (p.x < -20 || p.y < -20 || p.x > W + 20 || p.y > H + 20) continue;
+      g.strokeStyle = `rgba(255, 236, 200, ${(0.9 * (1 - h.age)).toFixed(3)})`;
+      g.beginPath();
+      g.arc(p.x, p.y, Math.min(30, h.rs) + 2 + 10 * h.age, 0, 2 * Math.PI);
+      g.stroke();
+    }
+  }
+  g.restore();
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
 W = window.innerWidth;
 H = window.innerHeight;
 const initial = loadHash();
+loadSound();
 syncSettingsUI();
+syncSoundUI();
 updateLegend();
 window.addEventListener('resize', resize);
 resize();

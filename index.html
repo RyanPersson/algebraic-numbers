@@ -21,6 +21,9 @@
         <button class="icon-btn" id="btn-flights" title="Zoom flights" aria-label="Zoom flights" aria-expanded="false">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4.5 19.5c2.5-.5 4.5-2.5 6.5-5.5s4.5-7 8.5-9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="4.5" cy="19.5" r="1.8" fill="currentColor"/><path d="M14.5 4.2h5.2v5.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
+        <button class="icon-btn" id="btn-sound" title="Listen" aria-label="Listen" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
         <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings" aria-expanded="false">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
         </button>
@@ -130,6 +133,84 @@
     </div>
   </section>
 
+  <section class="panel settings sound" id="sound" hidden>
+    <div class="ptitle">Listen</div>
+    <p class="hint">A playhead sweeps the view and every dot it crosses plays a note.</p>
+    <div class="row buttons">
+      <button class="text-btn primary" id="snd-play">▶ Play</button>
+    </div>
+    <div class="row">
+      <span class="label">Try</span>
+      <div class="row buttons presets">
+        <button class="text-btn" data-preset="zero" title="Quadratics fanning out of 0: harmonics 1–19 in one cycle">Fan at 0</button>
+        <button class="text-btn" data-preset="half" title="The fan at ½, at zoom 1">Fan at ½</button>
+        <button class="text-btn" data-preset="i" title="Quadratics round i: pitches √(b² + c²), like the overtones of a square drum">Square drum (i)</button>
+        <button class="text-btn" data-preset="w" title="Quadratics round ω = e^(iπ/3): pitches √(a² + ab + b²), like the overtones of a triangular drum">Triangle drum (ω)</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">Playhead</span>
+      <div class="seg" id="snd-mode">
+        <button data-value="ring">Ring round a centre</button>
+        <button data-value="line">Line across</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">Centre <output id="snd-centre-out"></output></span>
+      <div class="row save">
+        <input type="text" id="snd-centre" placeholder="0,  1/2,  x^2+1, …" spellcheck="false">
+        <button class="text-btn" id="snd-pick" title="Click a dot on the map">Pick</button>
+        <button class="text-btn" id="snd-sel" title="Use the selected number">Selected</button>
+      </div>
+    </div>
+    <div class="row" id="snd-exp-row">
+      <span class="label">Ring clock</span>
+      <div class="seg" id="snd-exp">
+        <button data-value="1">1/r</button>
+        <button data-value="2">1/r²</button>
+        <button data-value="3">1/r³</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">Pitch from</span>
+      <div class="seg" id="snd-pitch">
+        <button data-value="value">Value at centre</button>
+        <button data-value="lead">Lead coeff.</button>
+        <button data-value="const">Constant</button>
+      </div>
+    </div>
+    <label class="row slider" id="snd-cycles-row">
+      <span class="label">Cycles <output data-snd-out="cycles"></output></span>
+      <input type="range" min="1" max="32" step="1" data-snd="cycles">
+    </label>
+    <label class="row slider" id="snd-cyclesec-row">
+      <span class="label">Cycle length <output data-snd-out="cycleSec"></output></span>
+      <input type="range" min="1" max="30" step="0.5" data-snd="cycleSec">
+    </label>
+    <label class="row slider" id="snd-sweepsec-row">
+      <span class="label">Sweep length <output data-snd-out="sweepSec"></output></span>
+      <input type="range" min="3" max="90" step="1" data-snd="sweepSec">
+    </label>
+    <label class="row slider">
+      <span class="label">Base pitch <output data-snd-out="f0"></output></span>
+      <input type="range" min="30" max="440" step="1" data-snd="f0">
+    </label>
+    <label class="row slider">
+      <span class="label">Highest harmonic <output data-snd-out="maxH"></output></span>
+      <input type="range" min="2" max="64" step="1" data-snd="maxH">
+    </label>
+    <label class="row slider">
+      <span class="label">Smallest dot that plays <output data-snd-out="minPx"></output></span>
+      <input type="range" min="0.2" max="8" step="0.1" data-snd="minPx">
+    </label>
+    <label class="row slider">
+      <span class="label">Volume <output data-snd-out="volume"></output></span>
+      <input type="range" min="0" max="1" step="0.01" data-snd="volume">
+    </label>
+    <p class="hint" id="snd-info"></p>
+    <p class="hint">Why it’s a polyrhythm: round a rational point r/s, the quadratic dots lie exactly on 1/|z − r/s|² = s²·n/F, where n is the leading coefficient and F = s²·p(r/s) the value at the centre. So a ring with clock 1/r² meets the dots of value F exactly F times per cycle, and plays them at F × the base pitch, like a line sliding across a polyrhythm. Round a complex quadratic centre such as i the families are p + n·(x² + 1), evenly spaced with clock 1/r (approximately), and their values |p(i)| = √(b² + c²) are the same square roots that set the overtones of a square drumhead, √(j² + k²); round ω = e<sup>iπ/3</sup> they are √(a² + ab + b²), as for a triangular drum. Press <kbd>L</kbd> to play or stop, even with the controls hidden (<kbd>V</kbd>).</p>
+  </section>
+
   <div class="panel flight-ui flight-card" id="flight-card" hidden>
     <div class="fc-kicker">Zoom flight</div>
     <div class="fc-desc" id="flight-desc"></div>
@@ -188,6 +269,7 @@
         <li>Drag to pan, scroll or pinch to zoom, double-click to zoom in.</li>
         <li>Keys: <kbd>+</kbd> <kbd>−</kbd> zoom, arrows pan, <kbd>/</kbd> search, <kbd>Esc</kbd> close.</li>
         <li><kbd>V</kbd> hides all the controls, leaving just the picture. Press it again to bring them back.</li>
+        <li><kbd>L</kbd> plays or stops the sound (the speaker button opens its settings).</li>
         <li>The flight button (next to settings) records a smooth zoom through views and makes a link that plays it like a video.</li>
         <li>The address bar keeps the current view, so you can share a link.</li>
       </ul>

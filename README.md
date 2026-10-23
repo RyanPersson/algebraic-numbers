@@ -79,6 +79,37 @@ short step whose family has the most visible dots. It draws the circle (the full
 root locus, following t continuously out to ±∞, where it ends at γ) and lists the
 members.
 
+### Listen
+
+The speaker button turns the view into sound. A playhead sweeps the screen and
+every dot it crosses plays a note: louder for bigger dots, panned by position,
+with pitch = base pitch × the dot's *value at the centre*. **Fan at 0**, **Fan at
+½**, **Square drum (i)** and **Triangle drum (ω)** set up views where this sounds
+best. `L` plays or stops it, also with the controls hidden (`V`), so the
+playhead can be recorded.
+
+The playhead is either a line sliding across the screen or a ring closing in on
+a centre (a number, a fraction, a polynomial, or **Pick** on the map). Why a
+ring? Round a rational point γ = r/s, the quadratic dots form fans: families
+p + n·(sx − r)² whose roots lie exactly on
+
+&nbsp;&nbsp;&nbsp;&nbsp;1/|z − γ|² = s²·(leading coefficient)/F, with F = s²·p(r/s) an integer
+
+(at γ = 0, the complex roots of ax² + bx + c have |z|² = c/a). So if the ring
+shrinks so that 1/r² grows at a steady rate, the family with value F is crossed
+exactly F times per cycle, and plays at F times the base pitch. Rhythm and pitch
+are both a harmonic series: the same structure as a "1:2:3:…" polyrhythm, where a
+line slides across a grid. One cycle of the fan at 0 on a desktop screen holds
+harmonics 1–19.
+
+Round a complex quadratic centre such as i, the quadratics form families
+p + n·(x² + 1) instead. They are evenly spaced in 1/r (for large n), and their
+values |p(i)| = √(b² + c²) are square roots of integers, the same numbers that
+set the overtones of a square drumhead. Round ω = e^(iπ/3) they are
+√(a² + ab + b²), as for a triangular drum. Picking a centre selects the matching
+clock (1/r² for a rational centre, 1/r otherwise). Cubics and other centres
+aren't exact, but often still sound good.
+
 ## What is drawn
 
 Every algebraic number α is drawn once, from its minimal polynomial

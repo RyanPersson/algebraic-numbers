@@ -428,6 +428,17 @@ body.flying canvas#map { cursor: default; }
 .info code, .search-msg code { font: 12px var(--mono); color: var(--text); }
 .search-msg a { color: var(--accent); }
 
+/* listen panel */
+.sound .row .row { margin: 0; }
+.sound .row.save .text-btn { padding: 0 10px; }
+.sound .presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sound .presets .text-btn { padding: 0 10px; }
+.sound #snd-pick.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+#btn-sound.on { color: #ff7a5a; }
+.sound #snd-play.playing { background: #ff6a4d; border-color: #ff6a4d; color: #fff; }
+.sound #snd-info { color: var(--muted); }
+body.picking canvas#map { cursor: copy; }
+
 /* arc members in the info panel */
 .info .arc-members tr { cursor: pointer; }
 .info .arc-members tr:hover td { background: rgba(255, 255, 255, 0.05); }

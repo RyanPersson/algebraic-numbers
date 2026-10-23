@@ -1685,15 +1685,15 @@ function loadHash() {
 // A worker of its own lists every dot on screen, so the hover queries stay quick.
 
 const sonifier = new Sonifier();
-const SOUND_KEY = 'algebraic-numbers.sound';
+const SOUND_KEY = 'algebraic-numbers.sound.2';
 const SOUND_MAX_DOTS = 8000;
 const sound = {
-  mode: 'ring', exp: 2, pitch: 'value',
-  cycles: 1, cycleSec: 14.9, sweepSec: 20, f0: 58.27, maxH: 24, minPx: 0.6, volume: 0.6,
+  mode: 'ring', exp: 2, pitch: 'value', slow: true,
+  cycles: 8, cycleSec: 14.9, sweepSec: 20, f0: 58.27, maxH: 24, minPx: 0.6, volume: 0.6,
   centre: { x: 0, y: 0, coeffs: [0, 1] }, centreText: '0',
   dots: null, req: null, got: null, res: null, dirty: true, want: false, picking: false,
 };
-const SOUND_SAVED = ['mode', 'exp', 'pitch', 'cycles', 'cycleSec', 'sweepSec', 'f0', 'maxH', 'minPx', 'volume', 'centreText'];
+const SOUND_SAVED = ['mode', 'exp', 'pitch', 'slow', 'cycles', 'cycleSec', 'sweepSec', 'f0', 'maxH', 'minPx', 'volume', 'centreText'];
 
 const gcdInt = (a, b) => {
   a = Math.abs(a);
@@ -1766,8 +1766,10 @@ function syncSoundUI() {
     document.querySelector(`output[data-snd-out="${key}"]`).textContent = fmtSound[key](sound[key]);
   }
   const ring = sound.mode === 'ring';
-  const cyc = ring && sound.exp === 2 && isRationalCentre(sound.centre);
-  $('snd-exp-row').hidden = !ring;
+  const cyc = ring && sound.slow;
+  $('snd-slow-row').hidden = !ring;
+  $('snd-slow').checked = sound.slow;
+  $('snd-exp-row').hidden = !cyc;
   $('snd-cycles-row').hidden = !cyc;
   $('snd-cyclesec-row').hidden = !cyc;
   $('snd-sweepsec-row').hidden = cyc;
@@ -1839,7 +1841,7 @@ function rebuildSound() {
   if (!sound.dots) return;
   const got = sound.got;
   sound.res = sweepEvents(sound.dots, {
-    mode: sound.mode, centre: sound.centre, exp: sound.exp, pitch: sound.pitch,
+    mode: sound.mode, centre: sound.centre, exp: sound.exp, pitch: sound.pitch, slow: sound.slow,
     rect: got.rect, sizeK: got.k, minPx: sound.minPx, maxH: sound.maxH,
     cycles: sound.cycles, cycleSec: sound.cycleSec, sweepSec: sound.sweepSec,
   });
@@ -1866,14 +1868,20 @@ function soundInfo(text) {
   parts.push(r.rational
     ? `harmonics ${hs[0]}–${hs[hs.length - 1]} (${hs.length} different)`
     : `${hs.length} different pitches, ${fmtH(hs[0])}–${fmtH(hs[hs.length - 1])} × base`);
-  parts.push(r.cycles
-    ? `${r.cycles} of the ${r.totalCycles.toLocaleString()} cycles on screen, ${r.duration.toFixed(1)} s loop`
-    : `${r.duration.toFixed(1)} s loop`);
+  const gm = r.geom;
+  if (r.cycles) {
+    const rEnd = Math.pow(gm.u1, -1 / gm.d);
+    parts.push(`${r.cycles} cycle${r.cycles > 1 ? 's' : ''} in to radius ${+rEnd.toPrecision(2)}, ${r.duration.toFixed(1)} s loop`);
+  } else parts.push(`${r.duration.toFixed(1)} s loop`);
   let s = `${parts.join(' · ')}.`;
+  if (r.maxCycles && r.cycles === r.maxCycles && sound.cycles > r.cycles) s += ' The centre is off screen, so the ring stops once it has crossed the screen.';
+  if (gm.steady) s += ' Steady speed: the rhythm speeds up as the ring closes in.';
+  else if (r.cycle && r.cycle.kind === 'exact') s += ' In each cycle the dots of value F play exactly F times.';
+  else if (r.cycle && r.cycle.kind === 'asymptotic') s += ` One cycle is |q′(γ)| = ${+r.cycle.unit.toPrecision(3)} in 1/r, so the families keep time with their pitch (more exactly further in).`;
   if (sound.dots.length >= SOUND_MAX_DOTS) s += ` Only the biggest ${SOUND_MAX_DOTS.toLocaleString()} dots play.`;
   const c = sound.centre;
   if (sound.pitch === 'value' && !r.rational) s += ' The centre isn’t rational, so the pitches aren’t whole multiples of the base: it sounds more like a drum or a bell.';
-  if (sound.mode === 'ring' && c.coeffs) {
+  if (sound.mode === 'ring' && sound.slow && c.coeffs) {
     const want = c.coeffs.length === 2 ? 2 : 1;
     if (sound.exp !== want) s += ` The families round this centre are evenly spaced with clock 1/r${want === 2 ? '²' : ''}.`;
   }
@@ -1969,6 +1977,12 @@ $('snd-centre').addEventListener('change', () => {
   if (c) setCentre(c, text);
   else $('snd-centre-out').textContent = '· couldn’t read that';
 });
+$('snd-slow').addEventListener('change', (e) => {
+  sound.slow = e.target.checked;
+  saveSound();
+  syncSoundUI();
+  rebuildSound();
+});
 $('snd-pick').onclick = () => setPicking(!sound.picking);
 $('snd-sel').onclick = () => {
   if (!selected) { soundInfo('Click a number on the map first, then press Selected.'); return; }
@@ -1981,12 +1995,12 @@ $('snd-sel').onclick = () => {
 const SOUND_PRESETS = {
   zero: { centre: rationalCentre(0, 1), zoom: 0, at: 'bottom', sweep: {} },
   half: { centre: rationalCentre(1, 2), zoom: 1, at: 'bottom', sweep: {} },
-  i: { centre: { x: 0, y: 1, coeffs: [1, 0, 1] }, zoom: 2, at: 'middle', sweep: { sweepSec: 20 } },
-  w: { centre: { x: 0.5, y: Math.sqrt(3) / 2, coeffs: [1, -1, 1] }, zoom: 2, at: 'middle', sweep: { sweepSec: 20 } },
+  i: { centre: { x: 0, y: 1, coeffs: [1, 0, 1] }, zoom: 2, at: 'middle', sweep: { cycleSec: 6 } },
+  w: { centre: { x: 0.5, y: Math.sqrt(3) / 2, coeffs: [1, -1, 1] }, zoom: 2, at: 'middle', sweep: { cycleSec: 6 } },
 };
 function soundPreset(name) {
   const pr = SOUND_PRESETS[name];
-  Object.assign(sound, { mode: 'ring', pitch: 'value', cycles: 1, cycleSec: 14.9, minPx: 0.3, maxH: 24 }, pr.sweep);
+  Object.assign(sound, { mode: 'ring', pitch: 'value', cycles: 8, cycleSec: 14.9, minPx: 0.3, maxH: 24 }, pr.sweep);
   Object.assign(settings, { maxDeg: 2, detail: 0.2 });
   syncSettingsUI();
   updateLegend();
@@ -2030,8 +2044,7 @@ function drawSound() {
       path(); g.stroke();
     };
     if (gm.mode === 'ring') {
-      const u = gm.u0 + ph * (gm.u1 - gm.u0);
-      const rad = Math.pow(u, -1 / gm.d) * sCss();
+      const rad = (gm.steady ? gm.r0 + ph * (gm.r1 - gm.r0) : Math.pow(gm.u0 + ph * (gm.u1 - gm.u0), -1 / gm.d)) * sCss();
       const c = toScreen(gm.cx, gm.cy);
       if (Number.isFinite(rad) && rad > 0.5 && rad < 1e6) stroke(() => { g.beginPath(); g.arc(c.x, c.y, rad, 0, 2 * Math.PI); });
     } else {
